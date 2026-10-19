@@ -36,7 +36,6 @@
     "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "check": "npm run typecheck && npm test",
     "prepublishOnly": "npm run build",
-    "demo": "node scripts/start.mjs --demo",
     "start": "node scripts/start.mjs"
   },
   "peerDependencies": {

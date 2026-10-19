@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { link } from './link.mjs';
 import { installedDependency } from './dependency.mjs';
 import { harnessPeers, checkPeerArtifacts } from './harness.mjs';
-import { profileName, demoProfileName, migrateProfiles } from './profiles.mjs';
+import { profileName, migrateProfiles } from './profiles.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const harness = await realpath(resolve(process.argv[2] ?? join(root, '../deepseek-harness')));
@@ -54,24 +54,5 @@ if (configuredProfile.dsh?.profile?.patchReload === undefined) {
 }
 if (profileChanged) await writeFile(profileManifest, JSON.stringify(configuredProfile, null, 2) + '\n');
 if (!existsSync(join(profile, 'cordis.patch.yml'))) await writeFile(join(profile, 'cordis.patch.yml'), '[]\n');
-const demo = join(profiles, demoProfileName);
-await mkdir(demo, { recursive: true });
-await link(root, join(demo, 'node_modules', manifest.name));
-await writeFile(join(demo, 'package.json'), JSON.stringify({
-  name: `local-${demoProfileName}`, private: true, type: 'module',
-  dependencies: { [manifest.name]: `link:${root}` },
-  dsh: { profile: { bundles: [], patchReload: 'startup' } },
-}, null, 2) + '\n');
-await writeFile(join(demo, 'cordis.patch.yml'), [
-  '- insert:',
-  '    - id: demo-runtime',
-  `      name: ${JSON.stringify(join(root, 'fixtures/demo-runtime.mjs'))}`,
-  '    - id: simple-tui',
-  '      name: "@nickyuan/deepseek-harness-tui"',
-  '      config:',
-  '        title: DeepSeek Harness TUI · OFFLINE DEMO (no model or tools)',
-  '        maxRows: 500',
-  '',
-].join('\n'));
 await writeFile(join(root, '.local.json'), JSON.stringify({ harness }, null, 2) + '\n');
-console.log(`Linked to ${harness}\nLocal profile: ${profile}\nNext: npm run build && npm run demo\nReal agent: npm start (requires a fully built harness)`);
+console.log(`Linked to ${harness}\nLocal profile: ${profile}\nNext: npm run build && npm start (requires a fully built harness)`);

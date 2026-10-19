@@ -71,17 +71,9 @@ Start a live conversation using your configured provider credentials:
 npm start
 ```
 
-Or try the demo without credentials:
+`npm run setup` finds Harness at `../deepseek-harness` and leaves that checkout unchanged. For a different location, use `npm run setup -- /path/to/deepseek-harness`. Source launches use the same `deepseek-harness-tui` profile name as the global command, but store settings and sessions separately in this repository's `.dsh-home/`. Put provider overrides in `.dsh-home/profiles/deepseek-harness-tui/cordis.patch.yml`.
 
-```sh
-npm run demo
-```
-
-The demo uses simulated responses and tool actions and makes no model requests.
-
-`npm run setup` finds Harness at `../deepseek-harness` and leaves that checkout unchanged. For a different location, use `npm run setup -- /path/to/deepseek-harness`. Source launches use the same `deepseek-harness-tui` profile name as the global command, but store settings and sessions separately in this repository's `.dsh-home/`. Put provider overrides in `.dsh-home/profiles/deepseek-harness-tui/cordis.patch.yml`. The demo uses `deepseek-harness-tui-demo`.
-
-Setup migrates legacy `learn-tui` profiles when the new profile directories do not exist, preserving the live profile's custom configuration. If both names exist, setup keeps the new profile and leaves the old one untouched for manual review. The demo configuration is regenerated on each setup.
+Setup migrates legacy `learn-tui` profiles when the new profile directories do not exist, preserving the live profile's custom configuration. If both names exist, setup keeps the new profile and leaves the old one untouched for manual review.
 
 To make your source build available as a global command, run the following from `deepseek-harness-tui`:
 

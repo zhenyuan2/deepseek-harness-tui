@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Remove the offline demo command, simulated runtime, and demo profile setup.
+
 ## 0.1.2 — 2026-10-19
 
 - Restore raw mode, cursor visibility, scroll margins, mouse reporting, and bracketed paste on SIGINT/SIGTERM/SIGHUP, uncaught errors, and process exit; launchers now forward termination signals to the TUI.

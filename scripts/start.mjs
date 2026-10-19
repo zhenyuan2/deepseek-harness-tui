@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { harnessPeers, checkPeerArtifacts } from './harness.mjs';
-import { profileName, demoProfileName } from './profiles.mjs';
+import { profileName } from './profiles.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 if (!existsSync(join(root, '.local.json')) || !existsSync(join(root, 'dist/index.js'))) {
@@ -27,9 +27,7 @@ try {
   process.exit(1);
 }
 const args = process.argv.slice(2);
-const demo = args[0] === '--demo';
-if (demo) args.shift();
-const profile = demo ? demoProfileName : profileName;
+const profile = profileName;
 if (!existsSync(join(root, '.dsh-home/profiles', profile, 'package.json'))) {
   console.error('Run npm run setup first to create the profile or migrate the legacy profile name.');
   process.exit(1);
@@ -38,13 +36,13 @@ let resumeSessionId;
 const resumeIndex = args.indexOf('--resume');
 if (resumeIndex !== -1) {
   resumeSessionId = args[resumeIndex + 1];
-  if (demo || !resumeSessionId || resumeSessionId.startsWith('-')) {
+  if (!resumeSessionId || resumeSessionId.startsWith('-')) {
     console.error('Usage: npm start -- --resume <session-id> (requires persistent Harness sessions)');
     process.exit(1);
   }
   args.splice(resumeIndex, 2);
 }
-if (!demo && !args.includes('--dump-config') && !args.includes('--dump-default-config')) {
+if (!args.includes('--dump-config') && !args.includes('--dump-default-config')) {
   // The checkout's YAML can be newer than its installed/build artifacts.
   // Report missing base plugins before entering the older launcher's boot wait.
   const baseDir = join(harness, 'packages/bundle/base');
@@ -61,7 +59,7 @@ if (!demo && !args.includes('--dump-config') && !args.includes('--dump-default-c
     } catch { missing.push(specifier); }
   }
   if (missing.length) {
-    console.error(`Harness ${base.version} has missing base-plugin artifacts:\n${[...new Set(missing)].map(name => `  ${name}`).join('\n')}\n\nIn ${harness}, run pnpm install and pnpm run build first.\nYou can use npm run demo here without a model or complete base build.`);
+    console.error(`Harness ${base.version} has missing base-plugin artifacts:\n${[...new Set(missing)].map(name => `  ${name}`).join('\n')}\n\nIn ${harness}, run pnpm install and pnpm run build first.`);
     process.exit(1);
   }
 }
