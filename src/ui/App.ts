@@ -51,7 +51,7 @@ export function App(view: ViewModel, editor: Editor, columns: number, rows: numb
   if (!transcript && editor.previewAnchor !== active[0]?.id) { editor.previewStart = undefined; editor.previewAnchor = active[0]?.id; }
   const body = transcript ? transcript.frame(Messages(active, columns, theme, details), previewBudget, columns, theme, editor)
     : Conversation(active, columns, theme, details, previewBudget, editor);
-  const frame = [...body, ...Array<string>(Math.max(0, previewBudget - body.length)).fill(''), ...visibleMenu, ...footer];
+  const frame = [...Array<string>(Math.max(0, previewBudget - body.length)).fill(''), ...body, ...visibleMenu, ...footer];
   if (editor.caret) editor.caret = { row: editor.caret.row + previewBudget + visibleMenu.length + 1, column: editor.caret.column };
   return frame;
 }

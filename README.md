@@ -2,7 +2,7 @@
 
 A terminal interface for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), built as a Cordis plugin.
 
-Chat with your agent, review tool output and file diffs, and approve actions from the terminal. The interface supports streaming Markdown, model selection, and saved conversations, with completed output preserved in terminal scrollback. Harness handles model requests, tool execution, permissions, and session storage.
+Chat with your agent, review tool output and file diffs, and approve actions from the terminal. The interface supports streaming Markdown, model selection, and saved conversations, with completed output preserved in terminal scrollback on exit. Harness handles model requests, tool execution, permissions, and session storage.
 
 ## Install
 
@@ -34,7 +34,7 @@ DeepSeek models use the API Key provider (`deepseek-official`) by default. To us
 
 Only the selected DeepSeek provider appears in `/model`; other providers remain available. If a saved model or resumed session uses the other route, sending is blocked until you explicitly choose a model with `/model` or change the profile configuration. The TUI does not switch authentication methods automatically or modify shared credentials.
 
-Mouse dragging uses native terminal text selection by default; copy with your terminal's shortcut (Cmd+C on macOS). Use PgUp/PgDn to browse the conversation within the TUI. To enable mouse-wheel navigation inside the TUI, set `mouseTracking: true` in the plugin configuration; native selection then requires your terminal's mouse-reporting override, usually Shift+drag.
+The full-screen viewport keeps the composer pinned during resizing and history navigation. Use the mouse wheel or PgUp/PgDn to browse the conversation. For text selection, use your terminal's mouse-reporting override, usually Shift+drag, then copy with its shortcut (Cmd+C on macOS). Set `mouseTracking: false` to use native dragging and keyboard history navigation. Completed output is added to normal terminal scrollback when the TUI closes.
 
 ### From source
 

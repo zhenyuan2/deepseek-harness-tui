@@ -2,7 +2,7 @@ import type { PreviewViewport } from './Conversation.js';
 import { truncate, wrapStyled } from './text.js';
 import type { Theme } from './theme.js';
 
-/** Retain rendered history for application scrolling; publish each durable line once. */
+/** Retain review history and stage each durable line once for export on exit. */
 export class Transcript {
   private lines: string[] = [];
   private published = 0;
@@ -24,7 +24,7 @@ export class Transcript {
     viewport.previewTotal = all.length;
     viewport.previewLines = Math.max(1, height - 1);
     if (height <= 0) return [];
-    // Only committed lines may enter native scrollback. Previews remain erasable.
+    // Stage only committed lines for export; previews remain erasable.
     const budget = Math.max(0, height - active.length);
     let remaining = this.wrapped.slice(this.published).reduce((sum, lines) => sum + lines.length, 0);
     while (remaining > budget && this.published < this.lines.length) {
@@ -39,8 +39,9 @@ export class Transcript {
         ...all.slice(start, start + viewport.previewLines)];
     } else {
       viewport.previewStart = undefined;
-      shown = [...this.wrapped.slice(this.published).flat(), ...active];
-      if (shown.length > height) shown = [truncate(theme.paint('muted', '  … live · PgUp / wheel to read earlier'), columns), ...shown.slice(-Math.max(1, height - 1))].slice(0, height);
+      // Refill from retained history when the viewport grows. Publication does
+      // not remove lines from the live viewport.
+      shown = all.slice(-height);
     }
     // Bound the application's review cache, retaining all not-yet-published lines.
     const drop = Math.min(this.published, Math.max(0, this.lines.length - this.limit));
@@ -50,7 +51,7 @@ export class Transcript {
       viewport.previewTotal -= removed;
       if (viewport.previewStart !== undefined) viewport.previewStart = Math.max(0, viewport.previewStart - removed);
     }
-    return [...shown, ...Array<string>(Math.max(0, height - shown.length)).fill('')];
+    return [...Array<string>(Math.max(0, height - shown.length)).fill(''), ...shown];
   }
   finish(columns: number): string[] {
     return [...this.takePublished(), ...this.lines.slice(this.published).flatMap(line => wrapStyled(line, columns))];

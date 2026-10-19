@@ -31,7 +31,7 @@ export const Config: z<Config> = z.object({
   resumeSessionId: z.string().default(''),
   resumeLimit: z.number().min(10).max(1000).step(1).default(100),
   deepseekProvider: z.union(['deepseek-official', 'deepseek-account'] as const).default('deepseek-official'),
-  mouseTracking: z.boolean().default(false),
+  mouseTracking: z.boolean().default(true),
 });
 
 /** Mount one terminal and Agent; Cordis unload cancels and disposes both. */

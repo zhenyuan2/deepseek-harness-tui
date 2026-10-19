@@ -1,4 +1,4 @@
-/** Normal-buffer conversation viewport with an independently pinned composer. */
+/** Full-screen conversation viewport with an independently pinned composer. */
 import { writeSync } from 'node:fs';
 import { emitKeypressEvents } from 'node:readline';
 import { StringDecoder } from 'node:string_decoder';
@@ -21,6 +21,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   ports = { input: process.stdin, output: process.stdout },
   options: { mouseTracking?: boolean; exit?: (code: number) => void } = {}): () => void {
   const { input, output } = ports;
+  const mouseTracking = options.mouseTracking ?? true;
   if (!input.isTTY || !output.isTTY) throw new Error('DeepSeek Harness TUI requires an interactive terminal (stdin and stdout TTY).');
   const write = output.write.bind(output);
   const renderer = new ScrollbackRenderer(write);
@@ -73,7 +74,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
 
   const onKey = createInputHandler(view, editor, actions, schedule, () => { details = !details; });
   const mouse = mouseInput(text => { keys.write(text); }, direction => {
-    if (!options.mouseTracking) return;
+    if (!mouseTracking) return;
     if (view.approval) editor.approvalPage += direction;
     else if (view.picker) movePicker(view.picker, direction);
     else {
@@ -90,7 +91,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   // synchronous write and resets raw mode without waiting for stream flushes.
   const restoreTerminalSync = (): void => {
     try { if (rawTouched) input.setRawMode(wasRaw); } catch { /* stream may be gone */ }
-    const sequence = '\x1b[r\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l';
+    const sequence = '\x1b[?1049l\x1b[r\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l';
     try {
       const fd = (output as { fd?: number }).fd;
       if (typeof fd === 'number' && fd >= 0) {
@@ -181,7 +182,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       try { if (pasteEnabled) write('\x1b[?2004l'); } catch { /* best effort */ }
       // Resetting margins also homes the cursor. Preserve the cursor after the
       // published tail on success so a replacement TUI cannot overwrite it.
-      try { write((renderedClose ? '' : '\x1b[r') + '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l'); } catch { /* best effort */ }
+      try { write((renderedClose ? '' : '\x1b[?1049l\x1b[r') + '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l'); } catch { /* best effort */ }
       try { write('\x1b[?25h\x1b[0m'); } catch { /* best effort */ }
       try { if (rawTouched) input.setRawMode(wasRaw); } catch { /* stream may be gone */ }
       try { if (resumed && !wasFlowing) input.pause(); } catch { /* stream may be gone */ }
@@ -211,11 +212,10 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     emitKeypressEvents(keys);
     rawTouched = true; input.setRawMode(true);
     resumed = true; input.resume();
-    // Native selection requires mouse reporting to be disabled. Reset inherited
-    // modes too, so a previous application cannot leave dragging captured.
+    // Reset inherited mouse modes before enabling viewport navigation.
     pasteEnabled = true;
     write('\x1b[?2004h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
-    if (options.mouseTracking) write('\x1b[?1000h\x1b[?1006h');
+    if (mouseTracking) write('\x1b[?1000h\x1b[?1006h');
     input.on('keypress', onKey); listening = true;
     keys.on('keypress', onKey); input.on('data', onData);
     output.on('resize', schedule);
