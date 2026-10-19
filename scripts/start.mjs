@@ -15,7 +15,7 @@ if (!existsSync(join(root, '.local.json')) || !existsSync(join(root, 'dist/index
 const { harness } = JSON.parse(await readFile(join(root, '.local.json'), 'utf8'));
 try {
   const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-  const peers = await harnessPeers(harness, manifest.peerDependencies);
+  const peers = await harnessPeers(harness, Object.keys(manifest.peerDependencies));
   await checkPeerArtifacts(peers);
   for (const pkg of peers) {
     if (await realpath(join(root, 'node_modules', pkg.manifest.name)) !== await realpath(pkg.directory)) {

@@ -2,8 +2,8 @@ import { readModelPreferences, saveModelPreferences } from './model-preferences.
 import { readStatusline, saveStatusline, statuslineFields, defaultStatusline, type StatuslineField } from './statusline.js';
 import { randomUUID } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
-import { brandString } from '@deepseek-ai/dsh-brand';
-import { installModelSelection, type AgentHandle, type AgentSetup, type ModelSelection, type ModelSelectionRef } from '@deepseek-ai/dsh-agent';
+import type { AgentHandle, AgentSetup, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent';
+import { brandString, installModelSelection, checkHarnessServices, hasMethod, requireMethods } from './harness.js';
 import type { LlmModelInfo, LlmResolvedModelInfo, ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-session-query';
@@ -51,6 +51,7 @@ export class TuiRuntime {
   }
 
   async start(id?: string): Promise<void> {
+    checkHarnessServices(this.ctx);
     let settingsError: unknown;
     try { this.statusline = await readStatusline(this.config.statuslinePath); }
     catch (error) { settingsError = error; }
@@ -132,6 +133,7 @@ export class TuiRuntime {
   }
 
   private async acquire(id: string | undefined, signal: AbortSignal, initialSelection?: ModelSelectionRef): Promise<{ handle: AgentHandle; selection: ModelSelectionRef }> {
+    requireMethods(this.ctx.get('agents'), 'agents', [id ? 'resume' : 'create']);
     const selection: ModelSelectionRef = initialSelection ?? { current: { ...(this.savedSelection ?? this.ctx.agentDefaultModel.currentSelection()) }, assembled: undefined };
     const conflict = !id && this.providerError(selection.current?.provider);
     if (conflict) throw new Error(conflict);
@@ -186,7 +188,7 @@ export class TuiRuntime {
   private refreshContext(state: RuntimeSession): void {
     const llm = this.ctx.get('llm');
     const selection = state.selection.current;
-    if (!llm || !selection || !this.providerEnabled(selection.provider)) return;
+    if (!llm || !hasMethod(llm, 'resolveModelInfo') || !selection || !this.providerEnabled(selection.provider)) return;
     const route = state.view.model;
     const work = (async () => {
       try {
@@ -261,6 +263,7 @@ export class TuiRuntime {
     this.run(state, picker, async signal => {
       const query = this.ctx.get('sessionQuery');
       if (!query) throw new Error('Session browsing requires the Harness session-query service. /resume <id> can still load a known session.');
+      requireMethods(query, 'sessionQuery', ['listSessions', 'observeSession']);
       const records = (await query.listSessions(signal)).filter(item => item.header.origin !== 'subagent')
         .sort((a, b) => b.header.createdAt - a.header.createdAt);
       let failures = 0, titleFailures = 0;
@@ -284,7 +287,9 @@ export class TuiRuntime {
           });
           count += batch.length;
         }
-        const titles = await query.readTitleSnapshots(conversations.map(item => item.header.id), signal);
+        const titles = hasMethod(query, 'readTitleSnapshots')
+          ? await query.readTitleSnapshots(conversations.map(item => item.header.id), signal)
+          : [];
         if (stale(signal)) return;
         titleFailures += titles.filter(item => item.status === 'rejected').length;
         const choices = conversations.map((record, index): PickerOption => {
@@ -368,6 +373,7 @@ export class TuiRuntime {
     if (route) { this.depth(state, picker, route, effort); return; }
     this.run(state, picker, async signal => {
       const llm = this.ctx.get('llm'); if (!llm) throw new Error('This profile has no model provider service.');
+      requireMethods(llm, 'llm', ['listProviders', 'listModels']);
       const providers = llm.listProviders().filter(provider => this.providerEnabled(provider.id));
       const catalogs = await Promise.allSettled(providers.map(provider => llm.listModels(provider.id)));
       if (signal.aborted || state.view.picker !== picker || this.current !== state) return;
@@ -401,6 +407,7 @@ export class TuiRuntime {
       const conflict = this.providerError(provider);
       if (conflict) throw new Error(conflict);
       const llm = this.ctx.get('llm');
+      requireMethods(llm, 'llm', ['listProviders', 'resolveModelInfo']);
       if (!llm?.listProviders().some(item => item.id === provider)) throw new Error(`Provider is not registered: ${provider}`);
       const info = await llm.resolveModelInfo(provider, model, signal);
       if (signal.aborted || state.view.picker !== picker || this.current !== state) return;

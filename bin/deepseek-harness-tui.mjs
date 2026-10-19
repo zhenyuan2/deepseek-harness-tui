@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { homedir, constants } from 'node:os';
@@ -9,7 +9,6 @@ import { spawn } from 'node:child_process';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const profile = 'deepseek-harness-tui';
-const supportedDshVersion = '0.2.1-rc.2';
 
 function run(entry, args, env) {
   return new Promise((resolveRun, reject) => {
@@ -47,7 +46,7 @@ On first launch, register this installation using dsh plugin (requires pnpm).
   -h, --help            Show this help
 
 Uses DSH_HOME when set, otherwise ~/.dsh.
-Requires @deepseek-ai/dsh@${supportedDshVersion} installed alongside this package.`);
+Requires @deepseek-ai/dsh installed alongside this package.`);
     return 0;
   }
   let resume;
@@ -60,10 +59,12 @@ Requires @deepseek-ai/dsh@${supportedDshVersion} installed alongside this packag
   const require = createRequire(import.meta.url);
   let cliPath;
   try { cliPath = require.resolve('@deepseek-ai/dsh/package.json'); }
-  catch { throw new Error(`Install the CLI alongside this package: npm install -g @deepseek-ai/dsh@${supportedDshVersion} ${manifest.name}`); }
+  catch { throw new Error(`Install the CLI alongside this package: npm install -g @deepseek-ai/dsh ${manifest.name}`); }
   const cli = JSON.parse(await readFile(cliPath, 'utf8'));
-  if (cli.version !== supportedDshVersion) throw new Error(`Expected @deepseek-ai/dsh@${supportedDshVersion}, found ${cli.version}. Install the supported CLI version before launching.`);
-  const entry = join(dirname(cliPath), typeof cli.bin === 'string' ? cli.bin : cli.bin.dsh);
+  const binary = typeof cli.bin === 'string' ? cli.bin : cli.bin?.dsh;
+  if (typeof binary !== 'string' || !binary) throw new Error('Incompatible Harness CLI: the dsh executable entry is missing.');
+  const entry = resolve(dirname(cliPath), binary);
+  if (!(await stat(entry).catch(() => undefined))?.isFile()) throw new Error('Harness CLI executable is missing. Reinstall @deepseek-ai/dsh.');
   const configuredHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
   const home = resolve(configuredHome === '~' ? homedir() : configuredHome.startsWith('~/') ? join(homedir(), configuredHome.slice(2)) : configuredHome);
   const env = { ...process.env, DSH_HOME: home };

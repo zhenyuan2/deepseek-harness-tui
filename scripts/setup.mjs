@@ -12,7 +12,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const harness = await realpath(resolve(process.argv[2] ?? join(root, '../deepseek-harness')));
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 
-const peers = await harnessPeers(harness, manifest.peerDependencies);
+const peers = await harnessPeers(harness, Object.keys(manifest.peerDependencies));
 await checkPeerArtifacts(peers);
 for (const pkg of peers) {
   const name = pkg.manifest.name;

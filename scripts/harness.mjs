@@ -2,7 +2,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Locate the checkout's declared peers before changing any dependency links. */
-export async function harnessPeers(harness, versions) {
+export async function harnessPeers(harness, names) {
   const packages = new Map();
   async function discover(directory, depth) {
     try {
@@ -20,10 +20,10 @@ export async function harnessPeers(harness, versions) {
   await discover(join(harness, 'packages'), 3);
   await discover(join(harness, 'vendor'), 2);
   const peers = [];
-  for (const [name, version] of Object.entries(versions)) {
+  for (const name of names) {
     const pkg = packages.get(name);
-    if (!pkg || pkg.manifest.version !== version) {
-      throw new Error(`${name}: expected ${version}, found ${pkg?.manifest.version ?? 'missing'}. Update this TUI's peer versions for the Harness release first.`);
+    if (!pkg) {
+      throw new Error(`${name}: missing from this Harness checkout. Ensure the checkout contains the package and try again.`);
     }
     peers.push(pkg);
   }

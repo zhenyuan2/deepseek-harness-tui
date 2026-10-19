@@ -1,6 +1,6 @@
 /** Translate Harness services and events into terminal state. */
 import type { Context } from '@deepseek-ai/cordis';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, hasMethod } from './harness.js';
 import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent';
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
@@ -142,7 +142,11 @@ export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel,
         if (separator < 1 || separator === route.length - 1 || /\s/.test(route)) { view.add('error', 'Usage: /model provider/model'); return; }
         const provider = route.slice(0, separator); const model = route.slice(separator + 1);
         const llm = ctx.get('llm');
-        if (!llm || !llm.listProviders().some(item => item.id === provider)) { view.add('error', `Provider is not registered: ${provider}`); return; }
+        if (!llm || !hasMethod(llm, 'listProviders')) {
+          view.add('error', 'Model switching requires the Harness llm.listProviders() API.');
+          return;
+        }
+        if (!llm.listProviders().some(item => item.id === provider)) { view.add('error', `Provider is not registered: ${provider}`); return; }
         selection.current = { provider, model };
         view.model = route;
         view.add('system', `Model: ${route} · applies to the next request; provider validates the model on use.`);

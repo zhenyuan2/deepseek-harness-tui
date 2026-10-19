@@ -2,7 +2,8 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { lastAssistantStreamChunk, type TokenUsage } from '@deepseek-ai/dsh-llm';
+import type { TokenUsage } from '@deepseek-ai/dsh-llm';
+import { lastAssistantStreamChunk } from './harness.js';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
 
 export const statuslineFields = [
@@ -53,7 +54,7 @@ export class TokenStats {
     if (String(event.type) === 'llm/retry-started') this.last = undefined;
     if (event.type !== 'assistant/message' && event.type !== 'assistant/attempt') return;
     const usage = (event.type === 'assistant/message' ? event.data.usage : undefined)
-      ?? lastAssistantStreamChunk(event.data.stream, 'usage')?.usage;
+      ?? lastAssistantStreamChunk?.(event.data.stream, 'usage')?.usage;
     if (!usage) return;
     const previous = this.last?.turn === event.data.turn && this.last.step === event.data.step ? this.last.usage : undefined;
     if (previous) this.add(previous, -1);
