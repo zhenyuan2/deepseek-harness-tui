@@ -1,7 +1,9 @@
 import { StringDecoder } from 'node:string_decoder';
+export interface MouseReport { button: number; column: number; row: number; release: boolean }
 
 /** Filter SGR mouse reports before readline; pasted reports remain literal text. */
-export function mouseInput(forward: (text: string) => void, wheel: (direction: number) => void): { write(chunk: string | Buffer): void; close(): void } {
+export function mouseInput(forward: (text: string) => void, wheel: (direction: number) => void,
+  pointer?: (report: MouseReport) => void): { write(chunk: string | Buffer): void; close(): void } {
   const decoder = new StringDecoder('utf8');
   let buffer = ''; let pasting = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -18,6 +20,7 @@ export function mouseInput(forward: (text: string) => void, wheel: (direction: n
         else {
           const button = Number(report[1]);
           if (report[4] === 'M' && (button & 64) && (button & 3) < 2) wheel((button & 1) ? 1 : -1);
+          else if (!(button & 64)) pointer?.({ button, column: Number(report[2]) - 1, row: Number(report[3]) - 1, release: report[4] === 'm' });
         }
         buffer = buffer.slice(report[0].length); continue;
       }

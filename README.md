@@ -34,7 +34,7 @@ DeepSeek models use the API Key provider (`deepseek-official`) by default. To us
 
 Only the selected DeepSeek provider appears in `/model`; other providers remain available. If a saved model or resumed session uses the other route, sending is blocked until you explicitly choose a model with `/model` or change the profile configuration. The TUI does not switch authentication methods automatically or modify shared credentials.
 
-The full-screen viewport keeps the composer pinned during resizing and history navigation. Use the mouse wheel or PgUp/PgDn to browse the conversation. For text selection, use your terminal's mouse-reporting override, usually Shift+drag, then copy with its shortcut (Cmd+C on macOS). Set `mouseTracking: false` to use native dragging and keyboard history navigation. Completed output is added to normal terminal scrollback when the TUI closes.
+The full-screen viewport keeps the composer pinned during resizing and history navigation. Use the mouse wheel or PgUp/PgDn to browse the conversation. Drag to select text: the TUI highlights it and automatically copies it when you release the mouse. Ctrl+C copies and clears an active selection; Esc clears it. Scrolling, typing, resizing, or changes to the selected text clear the selection. Clipboard writes use OSC 52 with local clipboard tools as a fallback; over SSH, the terminal must allow OSC 52. Your terminal's native selection override, usually Shift+drag, remains available. Set `mouseTracking: false` for native dragging at all times and keyboard history navigation. Completed output is added to normal terminal scrollback when the TUI closes.
 
 ### From source
 

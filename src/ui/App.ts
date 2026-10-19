@@ -11,7 +11,7 @@ import { plain, truncate, wrap } from './text.js';
 export function Header(title: string, model: string, cwd: string, columns: number, theme: Theme): string[] {
   return ['', truncate(`  ${theme.paint('accent', '✦')} ${theme.paint('bold', plain(title))}`, columns),
     truncate(`    ${theme.paint('muted', `${plain(model)} · ${plain(cwd)}`)}`, columns),
-    truncate(`    ${theme.paint('muted', '/help commands · /details tool output · Ctrl+C exit')}`, columns), ''];
+    truncate(`    ${theme.paint('muted', '/help commands · Drag to copy · Ctrl+C exit')}`, columns), ''];
 }
 export function App(view: ViewModel, editor: Editor, columns: number, rows: number, theme: Theme, details: boolean, now: number, transcript?: Transcript): string[] {
   const capacity = Math.max(1, rows - 1);

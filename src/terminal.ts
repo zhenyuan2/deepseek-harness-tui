@@ -6,11 +6,13 @@ import { PassThrough } from 'node:stream';
 import type { ViewModel } from './model.js';
 import { App, Header } from './ui/App.js';
 import { Editor } from './ui/Composer.js';
-import { createInputHandler } from './ui/input.js';
+import { createInputHandler, type Key } from './ui/input.js';
 import { Messages } from './ui/Conversation.js';
 import { ScrollbackRenderer } from './ui/scrollback.js';
 import { Transcript } from './ui/transcript.js';
 import { mouseInput } from './ui/mouse.js';
+import { TextSelection } from './ui/selection.js';
+import { copyText } from './ui/clipboard.js';
 import { movePicker } from './ui/Picker.js';
 import { createTheme } from './ui/theme.js';
 import { plain, truncate } from './ui/text.js';
@@ -19,14 +21,16 @@ export interface Actions { submit(text: string): void; cancel(): void; quit(): v
 
 export function openTerminal(view: ViewModel, actions: Actions, title: string,
   ports = { input: process.stdin, output: process.stdout },
-  options: { mouseTracking?: boolean; exit?: (code: number) => void } = {}): () => void {
+  options: { mouseTracking?: boolean; exit?: (code: number) => void; copy?: (text: string) => void } = {}): () => void {
   const { input, output } = ports;
   const mouseTracking = options.mouseTracking ?? true;
   if (!input.isTTY || !output.isTTY) throw new Error('DeepSeek Harness TUI requires an interactive terminal (stdin and stdout TTY).');
   const write = output.write.bind(output);
+  const copy = options.copy ?? ((text: string) => copyText(text, write));
   const renderer = new ScrollbackRenderer(write);
   const theme = createTheme(); const editor = new Editor();
   const transcript = new Transcript();
+  const selection = new TextSelection();
   const keys = new PassThrough();
   const wasRaw = input.isRaw; const wasFlowing = input.readableFlowing === true;
   let closed = false; let details = false;
@@ -45,7 +49,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   const consumeScreenClear = (): void => {
     if (screenRevision === view.screenRevision) return;
     screenRevision = view.screenRevision;
-    transcript.clear(); renderer.clear(); header = false;
+    selection.clear(); transcript.clear(); renderer.clear(); header = false;
     editor.previewStart = undefined; editor.previewTotal = 0; editor.previewAnchor = undefined;
   };
 
@@ -58,8 +62,11 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       if (header) { transcript.append(Header(title, view.model, view.cwd || process.cwd(), columns(), theme)); header = false; }
       transcript.append(Messages(view.takeCompleted(), columns(), theme));
       const frame = App(view, editor, columns(), rows(), theme, details, Date.now(), transcript);
-      renderer.render(transcript.takePublished(), frame, output.columns || 80, rows(), editor.contentRows, editor.caret);
+      while (frame.length < rows()) frame.push('');
+      selection.update(frame, columns());
+      renderer.render(transcript.takePublished(), selection.overlay(), output.columns || 80, rows(), editor.contentRows, editor.caret);
     } catch (error: unknown) {
+      selection.clear();
       // Rendering is model-driven. Keep the terminal alive with a bounded
       // diagnostic instead of letting a timer callback throw out of the process.
       try {
@@ -72,9 +79,27 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   };
   const schedule = (): void => { if (!closed && timer === undefined) timer = setTimeout(redraw, 25); };
 
-  const onKey = createInputHandler(view, editor, actions, schedule, () => { details = !details; });
+  const handleKey = createInputHandler(view, editor, actions, schedule, () => { details = !details; });
+  // Pasted keys must never copy or trigger selection shortcuts.
+  let pasting = false;
+  const onKey = (text: string | undefined, key: Key = {}): void => {
+    if (!pasting && selection.active && (key.name === 'escape' || (key.ctrl && key.name === 'c'))) {
+      if (key.ctrl && key.name === 'c') {
+        // Flush pending model changes before copying so stale coordinates are refused.
+        if (timer !== undefined) { clearTimeout(timer); redraw(); }
+        const text = selection.text(); if (text) copy(text);
+      }
+      selection.clear(); schedule();
+      return;
+    }
+    if (key.name === 'paste-start') pasting = true;
+    if (key.name === 'paste-end') pasting = false;
+    selection.clear();
+    handleKey(text, key);
+  };
   const mouse = mouseInput(text => { keys.write(text); }, direction => {
     if (!mouseTracking) return;
+    selection.clear();
     if (view.approval) editor.approvalPage += direction;
     else if (view.picker) movePicker(view.picker, direction);
     else {
@@ -83,6 +108,13 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       editor.previewStart = start >= last ? undefined : Math.max(0, start);
     }
     schedule();
+  }, report => {
+    if (!mouseTracking || closed) return;
+    // Incorporate queued changes before interpreting coordinates or committing a copy.
+    if (timer !== undefined) { clearTimeout(timer); redraw(); }
+    const text = selection.pointer(report);
+    renderer.render([], selection.overlay(), output.columns || 80, rows(), editor.contentRows, editor.caret);
+    if (text) copy(text);
   });
   const onData = (chunk: Buffer | string): void => mouse.write(chunk);
 
@@ -212,10 +244,10 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     emitKeypressEvents(keys);
     rawTouched = true; input.setRawMode(true);
     resumed = true; input.resume();
-    // Reset inherited mouse modes before enabling viewport navigation.
+    // Button-event tracking reports dragging as well as wheel events.
     pasteEnabled = true;
     write('\x1b[?2004h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
-    if (mouseTracking) write('\x1b[?1000h\x1b[?1006h');
+    if (mouseTracking) write('\x1b[?1002h\x1b[?1006h');
     input.on('keypress', onKey); listening = true;
     keys.on('keypress', onKey); input.on('data', onData);
     output.on('resize', schedule);
