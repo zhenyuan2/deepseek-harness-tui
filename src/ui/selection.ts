@@ -2,6 +2,13 @@ import type { MouseReport } from './mouse.js';
 import { graphemes, plain, width } from './text.js';
 
 interface Point { column: number; row: number }
+export interface SelectionViewport {
+  top: number;
+  start: number;
+  height: number;
+  lines: readonly string[];
+  revision: number;
+}
 const before = (a: Point, b: Point): boolean => a.row < b.row || (a.row === b.row && a.column < b.column);
 
 /** Application selection keeps wheel navigation available in the alternate screen. */
@@ -12,30 +19,61 @@ export class TextSelection {
   private focus?: Point;
   private dragging = false;
   private moved = false;
+  private viewport?: SelectionViewport;
+  private conversation = false;
+  private pointerPosition?: Point;
 
-  clear(): void { this.anchor = this.focus = undefined; this.dragging = this.moved = false; }
+  clear(): void {
+    this.anchor = this.focus = this.pointerPosition = undefined;
+    this.dragging = this.moved = this.conversation = false;
+  }
   get active(): boolean { return this.anchor !== undefined && this.focus !== undefined && this.moved; }
+  get reviewing(): boolean { return this.dragging && this.conversation; }
+  get scrollDirection(): number {
+    if (!this.reviewing || !this.moved || !this.viewport || !this.pointerPosition) return 0;
+    if (this.pointerPosition.row <= this.viewport.top) return -1;
+    if (this.pointerPosition.row >= this.viewport.top + this.viewport.height - 1) return 1;
+    return 0;
+  }
 
   /** Invalidate if layout or the text under a stationary selection changes. */
-  update(frame: string[], columns: number): void {
+  update(frame: string[], columns: number, viewport?: SelectionViewport): void {
     const previous = this.text();
     const resized = this.frame.length !== frame.length || this.columns !== columns;
+    const changedDocument = this.conversation && (!viewport || viewport.revision !== this.viewport?.revision);
     this.frame = [...frame]; this.columns = columns;
-    if (resized || (this.active && previous !== this.text())) this.clear();
+    this.viewport = viewport;
+    if (resized || changedDocument || (this.active && previous !== this.text())) this.clear();
+    // The anchor stays in document coordinates; focus follows the held pointer.
+    if (this.reviewing && this.pointerPosition) this.move(this.point(this.pointerPosition));
   }
 
   pointer(report: MouseReport): string | undefined {
     // Ignore right/middle buttons and no-button motion.
     if ((report.button & 3) !== 0 || !this.frame.length) return;
-    const point = { column: Math.max(0, Math.min(this.columns - 1, report.column)),
+    const position = { column: Math.max(0, Math.min(this.columns - 1, report.column)),
       row: Math.max(0, Math.min(this.frame.length - 1, report.row)) };
     if (report.release) {
       if (!this.dragging) return;
-      this.move(point); this.dragging = false;
+      this.move(this.point(position)); this.dragging = false;
       return this.active ? this.text() : undefined;
     }
-    if (report.button & 32) { if (this.dragging) this.move(point); }
-    else { this.clear(); this.anchor = this.focus = point; this.dragging = true; }
+    if (report.button & 32) {
+      if (this.dragging) { this.pointerPosition = position; this.move(this.point(position)); }
+    } else {
+      this.clear();
+      this.conversation = !!this.viewport && position.row >= this.viewport.top && position.row < this.viewport.top + this.viewport.height;
+      this.pointerPosition = position;
+      this.anchor = this.focus = this.point(position); this.dragging = true;
+    }
+  }
+
+  private point(position: Point): Point {
+    if (!this.conversation || !this.viewport) return position;
+    const { top, start, height } = this.viewport;
+    const row = Math.max(top, Math.min(top + height - 1, position.row));
+    const column = position.row < top ? 0 : position.row >= top + height ? this.columns - 1 : position.column;
+    return { column, row: start + row - top };
   }
 
   private move(point: Point): void {
@@ -52,7 +90,8 @@ export class TextSelection {
 
   text(): string {
     const result: string[] = [];
-    this.frame.forEach((line, row) => {
+    const lines = this.conversation ? this.viewport?.lines ?? [] : this.frame;
+    lines.forEach((line, row) => {
       const bounds = this.bounds(row); if (!bounds) return;
       let column = 0; let text = '';
       for (const char of graphemes(plain(line))) {
@@ -67,6 +106,10 @@ export class TextSelection {
 
   overlay(): string[] {
     return this.frame.map((line, row) => {
+      if (this.conversation) {
+        if (!this.viewport || row < this.viewport.top || row >= this.viewport.top + this.viewport.height) return line;
+        row += this.viewport.start - this.viewport.top;
+      }
       const bounds = this.bounds(row); if (!bounds) return line;
       let column = 0;
       return line.split(/(\x1b\[[0-9;]*m)/g).map(part => {

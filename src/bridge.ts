@@ -107,7 +107,7 @@ export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel,
           'F2 toggle live details · Ctrl+L clear screen (keep chat) · Esc stop · Ctrl+C exit',
           'PgUp / PgDn browse conversation · Ctrl+W delete word · Ctrl+K delete to line end',
           'Alt+←/→ move by word · Ctrl+A/E move to line start/end',
-          'Drag to select and copy automatically · Ctrl+C copies selection · Esc clears selection',
+          'Drag to select; hold at the top/bottom edge to scroll · Release to copy · Ctrl+C copies selection · Esc clears selection',
           'New input while working queues the next turn.',
         ].join('\n'));
       } else if (text === '/new' || text === '/clear') {

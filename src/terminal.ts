@@ -36,6 +36,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   let closed = false; let details = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let tick: ReturnType<typeof setInterval> | undefined;
+  let dragTick: ReturnType<typeof setInterval> | undefined;
   let unsubscribe: (() => void) | undefined;
   let rawTouched = false; let resumed = false; let pasteEnabled = false; let listening = false;
   let guards = false; let finishing = false;
@@ -63,10 +64,12 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       transcript.append(Messages(view.takeCompleted(), columns(), theme));
       const frame = App(view, editor, columns(), rows(), theme, details, Date.now(), transcript);
       while (frame.length < rows()) frame.push('');
-      selection.update(frame, columns());
+      selection.update(frame, columns(), view.approval || view.picker ? undefined : transcript.selectionViewport);
+      syncDragScroll();
       renderer.render(transcript.takePublished(), selection.overlay(), output.columns || 80, rows(), editor.contentRows, editor.caret);
     } catch (error: unknown) {
       selection.clear();
+      stopDragScroll();
       // Rendering is model-driven. Keep the terminal alive with a bounded
       // diagnostic instead of letting a timer callback throw out of the process.
       try {
@@ -79,6 +82,30 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   };
   const schedule = (): void => { if (!closed && timer === undefined) timer = setTimeout(redraw, 25); };
 
+  const stopDragScroll = (): void => {
+    if (dragTick !== undefined) { clearInterval(dragTick); dragTick = undefined; }
+  };
+  const scrollSelection = (direction: number): boolean => {
+    const viewport = transcript.selectionViewport;
+    if (!selection.reviewing || !viewport) return false;
+    const last = Math.max(0, editor.previewTotal - editor.previewLines);
+    const next = Math.max(0, Math.min(last, viewport.start + direction * 2));
+    if (next === viewport.start) return false;
+    // Keep history mode at the bottom while dragging, rather than jumping to follow.
+    editor.previewStart = next;
+    redraw();
+    return true;
+  };
+  const syncDragScroll = (): void => {
+    if (!selection.scrollDirection) { stopDragScroll(); return; }
+    if (dragTick !== undefined) return;
+    dragTick = setInterval(() => {
+      if (timer !== undefined) { clearTimeout(timer); redraw(); }
+      if (!scrollSelection(selection.scrollDirection)) stopDragScroll();
+    }, 80);
+    dragTick.unref();
+  };
+
   const handleKey = createInputHandler(view, editor, actions, schedule, () => { details = !details; });
   // Pasted keys must never copy or trigger selection shortcuts.
   let pasting = false;
@@ -89,16 +116,21 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
         if (timer !== undefined) { clearTimeout(timer); redraw(); }
         const text = selection.text(); if (text) copy(text);
       }
-      selection.clear(); schedule();
+      selection.clear(); stopDragScroll(); schedule();
       return;
     }
     if (key.name === 'paste-start') pasting = true;
     if (key.name === 'paste-end') pasting = false;
     selection.clear();
+    stopDragScroll();
     handleKey(text, key);
   };
   const mouse = mouseInput(text => { keys.write(text); }, direction => {
     if (!mouseTracking) return;
+    if (selection.reviewing) {
+      if (timer !== undefined) { clearTimeout(timer); redraw(); }
+      scrollSelection(direction); return;
+    }
     selection.clear();
     if (view.approval) editor.approvalPage += direction;
     else if (view.picker) movePicker(view.picker, direction);
@@ -113,6 +145,8 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     // Incorporate queued changes before interpreting coordinates or committing a copy.
     if (timer !== undefined) { clearTimeout(timer); redraw(); }
     const text = selection.pointer(report);
+    if (selection.reviewing && transcript.selectionViewport) editor.previewStart = transcript.selectionViewport.start;
+    syncDragScroll();
     renderer.render([], selection.overlay(), output.columns || 80, rows(), editor.contentRows, editor.caret);
     if (text) copy(text);
   });
@@ -181,6 +215,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     closed = true;
     if (timer !== undefined) clearTimeout(timer);
     if (tick !== undefined) clearInterval(tick);
+    stopDragScroll();
     try { unsubscribe?.(); } catch { /* disposers are best-effort during shutdown */ }
     if (listening) {
       try { input.off('keypress', onKey); } catch { /* stream may be gone */ }
