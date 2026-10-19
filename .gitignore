@@ -1,0 +1,27 @@
+# Dependencies and build output
+node_modules/
+dist/
+*.tgz
+*.tsbuildinfo
+
+# Local runtime state and credentials
+.local.json
+.dsh-home/
+.env
+.env.*
+!.env.example
+
+# Tests remain local and are excluded from version control
+tests/
+**/__tests__/
+*.test.*
+*.spec.*
+coverage/
+.nyc_output/
+
+# Logs and OS files
+*.log
+.DS_Store
+
+# Local agent instructions
+/AGENTS.md

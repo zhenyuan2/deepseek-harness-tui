@@ -1,0 +1,13 @@
+# dsh-base provides the agent, tools, provider, and persistence.
+# This bundle adds only the terminal consumer of those services.
+- insert:
+    - id: simple-tui
+      name: "@nickyuan/deepseek-harness-tui"
+      config:
+        title: DeepSeek Harness TUI
+        maxRows: 500
+        deepseekProvider: deepseek-official
+
+# A learning session has one terminal owner; restart after editing the plugin.
+- id: hmr
+  disabled: true
