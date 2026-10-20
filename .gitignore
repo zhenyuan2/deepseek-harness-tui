@@ -29,3 +29,7 @@ coverage/
 # Local project notes
 /docs/
 /CHANGELOG.md
+
+# Local editor settings and source artwork
+/.vscode/
+/assets/source/
