@@ -50,9 +50,7 @@ export function createInputHandler(view: ViewModel, editor: Editor, actions: Act
     }
     if (key.name === 'f2') { toggleDetails(); schedule(); return; }
     if (key.name === 'pageup' || key.name === 'pagedown') {
-      const last = Math.max(0, editor.previewTotal - editor.previewLines);
-      const start = (editor.previewStart ?? last) + (key.name === 'pageup' ? -1 : 1) * editor.previewLines;
-      editor.previewStart = start >= last ? undefined : Math.max(0, start);
+      editor.scrollPreview(key.name === 'pageup' ? -1 : 1, editor.previewLines, view.showWelcome);
       schedule(); return;
     }
     const enter = key.name === 'return' || key.name === 'enter';

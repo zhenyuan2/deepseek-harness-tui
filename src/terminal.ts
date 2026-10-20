@@ -13,11 +13,14 @@ import { Transcript } from './ui/transcript.js';
 import { mouseInput } from './ui/mouse.js';
 import { TextSelection } from './ui/selection.js';
 import { copyText } from './ui/clipboard.js';
+import { TerminalGraphics, type GraphicsCapabilities } from './ui/terminal-graphics.js';
 import { movePicker } from './ui/Picker.js';
 import { createTheme } from './ui/theme.js';
 import { plain, truncate } from './ui/text.js';
 export { plain, graphemes, width, wrap } from './ui/text.js';
 export interface Actions { submit(text: string): void; cancel(): void; quit(): void }
+// Conversation mounts share terminal support, but never reuse deleted image IDs.
+const graphicsCapabilities = new WeakMap<object, GraphicsCapabilities>();
 
 export function openTerminal(view: ViewModel, actions: Actions, title: string,
   ports = { input: process.stdin, output: process.stdout },
@@ -50,6 +53,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   const consumeScreenClear = (): void => {
     if (screenRevision === view.screenRevision) return;
     screenRevision = view.screenRevision;
+    graphics.resetScreen(columns(), rows());
     selection.clear(); transcript.clear(); renderer.clear(); header = false;
     editor.previewStart = undefined; editor.previewTotal = 0; editor.previewAnchor = undefined;
   };
@@ -62,17 +66,21 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       if (view.approval !== lastApproval) { editor.approvalPage = 0; lastApproval = view.approval; }
       if (header) { transcript.append(Header(title, view.model, view.cwd || process.cwd(), columns(), theme)); header = false; }
       transcript.append(Messages(view.takeCompleted(), columns(), theme));
-      const frame = App(view, editor, columns(), rows(), theme, details, Date.now(), transcript);
+      const frame = App(view, editor, columns(), rows(), theme, details, Date.now(), transcript, graphics.view);
       while (frame.length < rows()) frame.push('');
       selection.update(frame, columns(), view.approval || view.picker ? undefined : transcript.selectionViewport);
       syncDragScroll();
+      const placement = selection.active ? undefined : graphics.view?.placement;
+      if (graphics.prepare(placement, columns(), rows())) renderer.invalidate();
       renderer.render(transcript.takePublished(), selection.overlay(), output.columns || 80, rows(), editor.contentRows, editor.caret);
+      graphics.paint(placement);
     } catch (error: unknown) {
       selection.clear();
       stopDragScroll();
       // Rendering is model-driven. Keep the terminal alive with a bounded
       // diagnostic instead of letting a timer callback throw out of the process.
       try {
+        if (graphics.clear(columns(), rows())) renderer.invalidate();
         const message = `Render error: ${error instanceof Error ? error.message : String(error)} · Ctrl+C exit`;
         renderer.render([], [truncate(theme.paint('error', plain(message)), columns())], output.columns || 80, rows());
       } catch {
@@ -81,6 +89,10 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     }
   };
   const schedule = (): void => { if (!closed && timer === undefined) timer = setTimeout(redraw, 25); };
+  let capabilities = graphicsCapabilities.get(output);
+  if (!capabilities) { capabilities = {}; graphicsCapabilities.set(output, capabilities); }
+  const graphics = new TerminalGraphics(write, schedule, undefined, undefined, capabilities);
+  const onResize = (): void => { graphics.resize(); schedule(); };
 
   const stopDragScroll = (): void => {
     if (dragTick !== undefined) { clearInterval(dragTick); dragTick = undefined; }
@@ -91,8 +103,8 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     const last = Math.max(0, editor.previewTotal - editor.previewLines);
     const next = Math.max(0, Math.min(last, viewport.start + direction * 2));
     if (next === viewport.start) return false;
-    // Keep history mode at the bottom while dragging, rather than jumping to follow.
-    editor.previewStart = next;
+    // Conversation history follows the bottom; welcome output follows the top.
+    editor.previewStart = view.showWelcome && next === 0 ? undefined : next;
     redraw();
     return true;
   };
@@ -135,9 +147,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     if (view.approval) editor.approvalPage += direction;
     else if (view.picker) movePicker(view.picker, direction);
     else {
-      const last = Math.max(0, editor.previewTotal - editor.previewLines);
-      const start = (editor.previewStart ?? last) + direction * 3;
-      editor.previewStart = start >= last ? undefined : Math.max(0, start);
+      editor.scrollPreview(direction, 3, view.showWelcome);
     }
     schedule();
   }, report => {
@@ -147,15 +157,19 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     const text = selection.pointer(report);
     if (selection.reviewing && transcript.selectionViewport) editor.previewStart = transcript.selectionViewport.start;
     syncDragScroll();
+    const placement = selection.active ? undefined : graphics.view?.placement;
+    if (graphics.prepare(placement, columns(), rows())) renderer.invalidate();
     renderer.render([], selection.overlay(), output.columns || 80, rows(), editor.contentRows, editor.caret);
+    graphics.paint(placement);
     if (text) copy(text);
-  });
+  }, response => graphics.response(response));
   const onData = (chunk: Buffer | string): void => mouse.write(chunk);
 
   // Last-resort terminal restoration for signals and uncaught failures. The
   // normal close() can be skipped when Node exits, so this path uses a
   // synchronous write and resets raw mode without waiting for stream flushes.
   const restoreTerminalSync = (): void => {
+    try { graphics.dispose(columns(), rows()); } catch { /* best effort */ }
     try { if (rawTouched) input.setRawMode(wasRaw); } catch { /* stream may be gone */ }
     const sequence = '\x1b[?1049l\x1b[r\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l';
     try {
@@ -221,9 +235,10 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       try { input.off('keypress', onKey); } catch { /* stream may be gone */ }
       try { input.off('data', onData); } catch { /* stream may be gone */ }
       try { keys.off('keypress', onKey); } catch { /* stream may be gone */ }
-      try { output.off('resize', schedule); } catch { /* stream may be gone */ }
+      try { output.off('resize', onResize); } catch { /* stream may be gone */ }
     }
     try { mouse.close(); } catch { /* timer may already be gone */ }
+    try { graphics.dispose(columns(), rows()); } catch { /* terminal may be gone */ }
     try { keys.destroy(); } catch { /* stream may already be destroyed */ }
     for (const restore of restoreWrites) { try { restore(); } catch { /* restore as much as possible */ } }
     let renderedClose = false;
@@ -285,11 +300,12 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     if (mouseTracking) write('\x1b[?1002h\x1b[?1006h');
     input.on('keypress', onKey); listening = true;
     keys.on('keypress', onKey); input.on('data', onData);
-    output.on('resize', schedule);
+    output.on('resize', onResize);
     unsubscribe = view.subscribe(schedule);
     tick = setInterval(() => { if (view.status === 'running' && !view.approval) schedule(); }, 100);
     tick.unref();
     redraw();
+    if (view.showWelcome) graphics.start();
     return close;
   } catch (error: unknown) {
     // openTerminal performs terminal side effects before the first render.

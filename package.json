@@ -19,6 +19,7 @@
     "bin",
     "dist",
     "src",
+    "assets/whale-pro.png",
     "cordis.patch.yml",
     "LICENSE",
     "README.md",

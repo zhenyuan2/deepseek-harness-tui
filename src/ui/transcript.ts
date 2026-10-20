@@ -19,7 +19,7 @@ export class Transcript {
   }
   append(lines: string[]): void { this.lines.push(...lines); }
   takePublished(): string[] { const lines = this.pending; this.pending = []; return lines; }
-  frame(active: string[], height: number, columns: number, theme: Theme, viewport: PreviewViewport): string[] {
+  frame(active: string[], height: number, columns: number, theme: Theme, viewport: PreviewViewport, alignTop = false): string[] {
     this.selectionViewport = undefined;
     if (columns !== this.columns) { this.columns = columns; this.wrapped = []; }
     for (let i = this.wrapped.length; i < this.lines.length; i++) this.wrapped.push(wrapStyled(this.lines[i]!, columns));
@@ -49,8 +49,8 @@ export class Transcript {
       viewport.previewStart = undefined;
       // Refill from retained history when the viewport grows. Publication does
       // not remove lines from the live viewport.
-      shown = all.slice(-height);
-      contentStart = Math.max(0, all.length - height);
+      shown = alignTop ? all.slice(0, height) : all.slice(-height);
+      contentStart = alignTop ? 0 : Math.max(0, all.length - height);
     }
     // Bound the application's review cache, retaining all not-yet-published lines.
     const drop = Math.min(this.published, Math.max(0, this.lines.length - this.limit));
@@ -62,10 +62,11 @@ export class Transcript {
       if (viewport.previewStart !== undefined) viewport.previewStart = Math.max(0, viewport.previewStart - removed);
       // Selection starts fresh on the next frame after cache eviction.
     } else {
-      this.selectionViewport = { top: Math.max(0, height - shown.length) + heading,
+      this.selectionViewport = { top: (alignTop ? 0 : Math.max(0, height - shown.length)) + heading,
         start: contentStart, height: shown.length - heading, lines: all, revision: this.revision };
     }
-    return [...Array<string>(Math.max(0, height - shown.length)).fill(''), ...shown];
+    const padding = Array<string>(Math.max(0, height - shown.length)).fill('');
+    return alignTop ? [...shown, ...padding] : [...padding, ...shown];
   }
   finish(columns: number): string[] {
     return [...this.takePublished(), ...this.lines.slice(this.published).flatMap(line => wrapStyled(line, columns))];

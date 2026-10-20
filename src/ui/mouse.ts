@@ -3,7 +3,7 @@ export interface MouseReport { button: number; column: number; row: number; rele
 
 /** Filter SGR mouse reports before readline; pasted reports remain literal text. */
 export function mouseInput(forward: (text: string) => void, wheel: (direction: number) => void,
-  pointer?: (report: MouseReport) => void): { write(chunk: string | Buffer): void; close(): void } {
+  pointer?: (report: MouseReport) => void, response?: (sequence: string) => void): { write(chunk: string | Buffer): void; close(): void } {
   const decoder = new StringDecoder('utf8');
   let buffer = ''; let pasting = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -14,6 +14,11 @@ export function mouseInput(forward: (text: string) => void, wheel: (direction: n
       const escape = buffer.indexOf('\x1b');
       if (escape === -1) { forward(buffer); buffer = ''; break; }
       if (escape > 0) { forward(buffer.slice(0, escape)); buffer = buffer.slice(escape); }
+      const reply = response && buffer.match(/^(?:\x1b_G[^\x1b]*\x1b\\|\x1b\[\?[\d;]*c|\x1b\[6;\d+;\d+t|\x1b\[\?80;[0-4]\$y)/);
+      if (reply) {
+        if (pasting) forward(reply[0]); else response?.(reply[0]);
+        buffer = buffer.slice(reply[0].length); continue;
+      }
       const report = buffer.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])/);
       if (report) {
         if (pasting) forward(report[0]);
@@ -26,7 +31,10 @@ export function mouseInput(forward: (text: string) => void, wheel: (direction: n
       }
       const paste = buffer.match(/^\x1b\[(200|201)~/);
       if (paste) { pasting = paste[1] === '200'; forward(paste[0]); buffer = buffer.slice(paste[0].length); continue; }
-      if (buffer.length < 100 && ('\x1b[200~'.startsWith(buffer) || '\x1b[201~'.startsWith(buffer) || /^\x1b\[<[\d;]*$/.test(buffer))) {
+      if (response && buffer.length < 4096 && /^\x1b(?:_G[^\x1b]*(?:\x1b)?|\[\?[\d;]*\$?|\[6;[\d;]*)$/.test(buffer)) {
+        timer = setTimeout(flush, 500); break;
+      }
+      if (buffer.length < 100 && (['\x1b[200~', '\x1b[201~', '\x1b_G', '\x1b[6;'].some(prefix => prefix.startsWith(buffer)) || /^\x1b\[<[\d;]*$/.test(buffer))) {
         timer = setTimeout(flush, 40); break;
       }
       forward(buffer[0]!); buffer = buffer.slice(1);

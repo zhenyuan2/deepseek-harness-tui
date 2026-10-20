@@ -8,6 +8,7 @@ export class ScrollbackRenderer {
   private caret?: { row: number; column: number };
   private caretVisible = false;
   constructor(private readonly write: (text: string) => unknown) {}
+  invalidate(): void { this.screen = []; }
   clear(): void {
     // Clear the normal buffer as well for an explicit Ctrl+L / clear chat.
     this.write('\x1b[?25l\x1b[?1049l\x1b[r\x1b[2J\x1b[3J\x1b[H');

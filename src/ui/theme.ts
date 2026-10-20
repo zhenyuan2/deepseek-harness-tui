@@ -1,5 +1,10 @@
 export type Tone = 'accent' | 'muted' | 'border' | 'success' | 'error' | 'warning' | 'code' | 'bold' | 'italic' | 'cursor';
-export interface Theme { paint(tone: Tone, text: string): string }
+export type PixelColor = readonly [number, number, number];
+export interface Theme {
+  readonly color?: boolean;
+  paint(tone: Tone, text: string): string;
+  pixel(character: string, foreground: PixelColor, background?: PixelColor): string;
+}
 // Claude Code inspired, restrained ANSI-256 palette. Body text and background
 // inherit the terminal theme, so we never repaint the user's whole terminal.
 const codes: Record<Tone, string> = {
@@ -13,5 +18,13 @@ const codes: Record<Tone, string> = {
   bold: '1', italic: '3', cursor: '7',
 };
 export function createTheme(color = process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb'): Theme {
-  return { paint: (tone, text) => color || tone === 'cursor' ? `\x1b[${codes[tone]}m${text}\x1b[0m` : text };
+  return {
+    color,
+    paint: (tone, text) => color || tone === 'cursor' ? `\x1b[${codes[tone]}m${text}\x1b[0m` : text,
+    pixel(character, foreground, background) {
+      if (!color) return character;
+      const fill = background ? `;48;2;${background.join(';')}` : '';
+      return `\x1b[38;2;${foreground.join(';')}${fill}m${character}\x1b[0m`;
+    },
+  };
 }

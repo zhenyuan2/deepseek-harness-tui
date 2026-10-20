@@ -15,6 +15,8 @@ export class Editor {
   selection = 0;
   pastedLines = 0;
   approvalPage = 0;
+  /** Last rendered welcome mode; prevents notice scrolling from leaking into chat history. */
+  welcome?: boolean;
   previewStart?: number;
   previewTotal = 0;
   previewLines = 1;
@@ -71,6 +73,18 @@ export class Editor {
     if (this.historyIndex === this.history.length) this.draft = this.text;
     this.historyIndex = Math.max(0, Math.min(this.history.length, this.historyIndex + direction));
     this.replace(this.history[this.historyIndex] ?? this.draft);
+  }
+  /** Conversation previews are bottom-anchored; the welcome/notice viewport is top-anchored. */
+  scrollPreview(direction: number, step: number, topAnchored: boolean): void {
+    const last = Math.max(0, this.previewTotal - this.previewLines);
+    if (!last) { this.previewStart = undefined; return; }
+    if (topAnchored) {
+      const start = Math.max(0, Math.min(last, (this.previewStart ?? 0) + direction * step));
+      this.previewStart = start === 0 ? undefined : start;
+      return;
+    }
+    const start = (this.previewStart ?? last) + direction * step;
+    this.previewStart = start >= last ? undefined : Math.max(0, start);
   }
   submit(): string {
     const value = this.text.trim();

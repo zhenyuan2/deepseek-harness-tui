@@ -53,6 +53,8 @@ export class ViewModel {
   rows: Row[] = [];
   status = 'starting';
   screenRevision = 0;
+  /** The first accepted chat dismisses the welcome art even if startup fails. */
+  welcomeDismissed = false;
   sessionId = '';
   model = '';
   reasoning = '';
@@ -99,9 +101,13 @@ export class ViewModel {
     this.trim(); return ready;
   }
   get active(): Row[] { return this.rows.filter(row => !row.archived); }
+  get showWelcome(): boolean {
+    return !this.welcomeDismissed && this.status === 'idle' && this.sessionId === 'Not started';
+  }
   /** Dismiss visible output without changing conversation facts or retained details. */
-  clearScreen(): void {
+  clearScreen(restoreWelcome = false): void {
     this.takeCompleted();
+    this.welcomeDismissed = !restoreWelcome;
     this.screenRevision++;
     this.changed();
   }

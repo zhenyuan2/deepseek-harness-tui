@@ -78,6 +78,7 @@ export class TuiRuntime {
       if (creation?.signal.aborted) { view.add('system', 'Startup is cancelling. Recall your message with ↑ and retry when ready.'); return; }
       pending.push(text);
       if (creating) return;
+      view.welcomeDismissed = true;
       creating = true; creation = new AbortController(); view.setStatus('running');
       const state = this.current!;
       const work = (async () => {
@@ -113,8 +114,7 @@ export class TuiRuntime {
     };
     const previous = this.current;
     this.current = { selection, view, actions };
-    view.add('system', 'Describe a task to get started. /help for shortcuts.');
-    if (clearScreen) view.clearScreen();
+    if (clearScreen) view.clearScreen(true);
     try { this.activate(view, actions); }
     catch (error) { actions.dispose(); this.current = previous; if (previous) this.activate(previous.view, previous.actions); throw error; }
     previous?.actions.dispose();
@@ -226,7 +226,14 @@ export class TuiRuntime {
   newSession(clearScreen = false): void {
     const state = this.current;
     if (!this.idle(state)) return;
-    if (!state.handle) { state.view.picker?.cancel(); if (clearScreen) state.view.clearScreen(); return; }
+    if (!state.handle) {
+      state.view.picker?.cancel();
+      if (clearScreen) {
+        state.view.rows = [];
+        state.view.clearScreen(true);
+      }
+      return;
+    }
     const picker = this.picker(state, 'New conversation', 'Saving the current conversation…');
     picker.loadingText = 'Saving conversation…';
     this.run(state, picker, async signal => {
