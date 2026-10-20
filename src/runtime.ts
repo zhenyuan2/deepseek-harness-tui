@@ -12,6 +12,7 @@ import { connect, projectSessionEvent } from './bridge.js';
 import { ViewModel, type PickerOption, type PickerState } from './model.js';
 import type { Actions } from './terminal.js';
 
+/** @deprecated Legacy configuration value; Harness manages provider availability. */
 export type DeepSeekProvider = 'deepseek-official' | 'deepseek-account';
 export interface RuntimeConfig { maxRows: number; maxOutputChars: number; resumeLimit: number; statuslinePath?: string; modelPreferencesPath?: string; deepseekProvider?: DeepSeekProvider }
 export interface RuntimeSession {
@@ -39,16 +40,6 @@ export class TuiRuntime {
   private readonly preferences = new Map<string, ModelSelection>();
   constructor(private readonly ctx: Context, private readonly config: RuntimeConfig,
     private readonly activate: (view: ViewModel, actions: Actions) => void, private readonly quit: () => void) {}
-
-  private providerEnabled(provider: string): boolean {
-    return !['deepseek-official', 'deepseek-account'].includes(provider)
-      || provider === (this.config.deepseekProvider ?? 'deepseek-official');
-  }
-
-  private providerError(provider?: string): string | undefined {
-    if (!provider || this.providerEnabled(provider)) return;
-    return `DeepSeek provider conflict: this selection uses ${provider}, but deepseekProvider is ${this.config.deepseekProvider ?? 'deepseek-official'}. Choose a model with /model, or change deepseekProvider in the TUI profile and restart. No request was sent.`;
-  }
 
   async start(id?: string): Promise<void> {
     checkHarnessServices(this.ctx);
@@ -78,7 +69,7 @@ export class TuiRuntime {
     view.sessionId = 'Not started'; view.cwd = process.cwd(); view.status = 'idle';
     view.model = `${selection.current!.provider}/${selection.current!.model}`;
     view.reasoning = selection.current!.reasoningEffort ?? '';
-    const commands = { resume: (id?: string) => this.openResume(id), model: (route?: string, effort?: string) => this.openModel(route, effort), statusline: () => this.openStatusline(), newSession: (clearScreen?: boolean) => this.newSession(clearScreen), validateSelection: () => this.providerError(selection.current?.provider) };
+    const commands = { resume: (id?: string) => this.openResume(id), model: (route?: string, effort?: string) => this.openModel(route, effort), statusline: () => this.openStatusline(), newSession: (clearScreen?: boolean) => this.newSession(clearScreen) };
     const pending: string[] = [];
     let creating = false;
     let creation: AbortController | undefined;
@@ -123,8 +114,6 @@ export class TuiRuntime {
     const previous = this.current;
     this.current = { selection, view, actions };
     view.add('system', 'Describe a task to get started. /help for shortcuts.');
-    const conflict = this.providerError(selection.current?.provider);
-    if (conflict) view.add('error', conflict);
     if (clearScreen) view.clearScreen();
     try { this.activate(view, actions); }
     catch (error) { actions.dispose(); this.current = previous; if (previous) this.activate(previous.view, previous.actions); throw error; }
@@ -135,8 +124,6 @@ export class TuiRuntime {
   private async acquire(id: string | undefined, signal: AbortSignal, initialSelection?: ModelSelectionRef): Promise<{ handle: AgentHandle; selection: ModelSelectionRef }> {
     requireMethods(this.ctx.get('agents'), 'agents', [id ? 'resume' : 'create']);
     const selection: ModelSelectionRef = initialSelection ?? { current: { ...(this.savedSelection ?? this.ctx.agentDefaultModel.currentSelection()) }, assembled: undefined };
-    const conflict = !id && this.providerError(selection.current?.provider);
-    if (conflict) throw new Error(conflict);
     const setup: AgentSetup = (agentCtx, agent) => {
       const previous = id ? agent.session.requestHeader()?.config : undefined;
       const saved = id ? this.preferences.get(id) : undefined;
@@ -167,14 +154,11 @@ export class TuiRuntime {
     if (resumed) { for (const event of agent.session.snapshotEvents()) projectSessionEvent(view, event); view.finishTurn(); }
     const actions = connect(this.ctx, agent, view, this.quit, candidate.selection, {
       resume: id => this.openResume(id), model: (route, effort) => this.openModel(route, effort), statusline: () => this.openStatusline(), newSession: (clearScreen?: boolean) => this.newSession(clearScreen),
-      validateSelection: () => this.providerError(candidate.selection.current?.provider),
     });
     const previous = this.current;
     const state: RuntimeSession = { ...candidate, view, actions };
     this.current = state;
     view.add('system', resumed ? `Resumed session: ${view.sessionId}` : 'Describe a task to get started. /help for shortcuts.');
-    const conflict = this.providerError(selected.provider);
-    if (conflict) view.add('error', conflict);
     try { this.activate(view, actions); }
     catch (error) {
       actions.dispose(); this.current = previous;
@@ -188,7 +172,7 @@ export class TuiRuntime {
   private refreshContext(state: RuntimeSession): void {
     const llm = this.ctx.get('llm');
     const selection = state.selection.current;
-    if (!llm || !hasMethod(llm, 'resolveModelInfo') || !selection || !this.providerEnabled(selection.provider)) return;
+    if (!llm || !hasMethod(llm, 'resolveModelInfo') || !selection) return;
     const route = state.view.model;
     const work = (async () => {
       try {
@@ -374,16 +358,16 @@ export class TuiRuntime {
     this.run(state, picker, async signal => {
       const llm = this.ctx.get('llm'); if (!llm) throw new Error('This profile has no model provider service.');
       requireMethods(llm, 'llm', ['listProviders', 'listModels']);
-      const providers = llm.listProviders().filter(provider => this.providerEnabled(provider.id));
+      const providers = llm.listProviders();
       const catalogs = await Promise.allSettled(providers.map(provider => llm.listModels(provider.id)));
       if (signal.aborted || state.view.picker !== picker || this.current !== state) return;
       const models: LlmModelInfo[] = []; const failures: string[] = [];
       catalogs.forEach((result, index) => {
-        if (result.status === 'fulfilled') models.push(...result.value.filter(model => this.providerEnabled(model.provider)));
+        if (result.status === 'fulfilled') models.push(...result.value);
         else failures.push(`${providers[index]!.id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
       });
       const selected = state.selection.current!;
-      if (this.providerEnabled(selected.provider) && !models.some(model => model.provider === selected.provider && model.id === selected.model)) {
+      if (!models.some(model => model.provider === selected.provider && model.id === selected.model)) {
         models.unshift({ provider: selected.provider, id: selected.model, name: selected.model, description: 'Current route (not advertised in the catalog)' });
       }
       picker.options = models.map(model => ({ id: `${model.provider}/${model.id}`, label: model.name,
@@ -404,8 +388,6 @@ export class TuiRuntime {
       const separator = route.indexOf('/');
       if (separator < 1 || separator === route.length - 1 || /\s/.test(route)) throw new Error('Usage: /model provider/model [effort]');
       const provider = route.slice(0, separator), model = route.slice(separator + 1);
-      const conflict = this.providerError(provider);
-      if (conflict) throw new Error(conflict);
       const llm = this.ctx.get('llm');
       requireMethods(llm, 'llm', ['listProviders', 'resolveModelInfo']);
       if (!llm?.listProviders().some(item => item.id === provider)) throw new Error(`Provider is not registered: ${provider}`);
@@ -435,8 +417,6 @@ export class TuiRuntime {
 
   private applyModel(state: RuntimeSession, picker: PickerState, info: LlmResolvedModelInfo, effort: ReasoningEffortId | undefined): void {
     if (this.current !== state || state.view.picker !== picker || !this.idle(state)) return;
-    const conflict = this.providerError(info.provider);
-    if (conflict) { picker.error = conflict; state.view.changed(); return; }
     const selected: ModelSelection = { provider: info.provider, model: info.id, ...(effort === undefined ? {} : { reasoningEffort: effort }) };
     const commit = () => {
       this.savedSelection = selected;

@@ -33,7 +33,7 @@ function consumeError(state: ProjectionState, message: string): boolean {
 }
 
 /** Observe one owned agent; other agents continue through other answerers. */
-export interface SessionCommands { resume(id?: string): void; model(route?: string, effort?: string): void; statusline?(): void; newSession?(clearScreen?: boolean): void; validateSelection?(): string | undefined }
+export interface SessionCommands { resume(id?: string): void; model(route?: string, effort?: string): void; statusline?(): void; newSession?(clearScreen?: boolean): void }
 export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel, quit: () => void, selection?: ModelSelectionRef,
   commandsUI?: SessionCommands, startConversation?: (text: string) => void): Actions & { dispose(): void } {
   const projection: ProjectionState = { reportedErrors: new Map() };
@@ -158,8 +158,6 @@ export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel,
       }
       else {
         if (!text.trim()) return;
-        const selectionError = commandsUI?.validateSelection?.();
-        if (selectionError) { view.add('error', selectionError); return; }
         if (!agent) { startConversation?.(text); return; }
         const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } });
         view.enqueue(message.id, text);

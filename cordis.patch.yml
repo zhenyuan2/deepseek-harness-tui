@@ -6,7 +6,6 @@
       config:
         title: DeepSeek Harness TUI
         maxRows: 500
-        deepseekProvider: deepseek-official
 
 # A learning session has one terminal owner; restart after editing the plugin.
 - id: hmr

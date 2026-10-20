@@ -21,7 +21,8 @@ export interface Config {
   maxOutputChars: number;
   resumeSessionId: string;
   resumeLimit: number;
-  deepseekProvider: DeepSeekProvider;
+  /** @deprecated Accepted for existing profiles; no longer restricts providers. */
+  deepseekProvider?: DeepSeekProvider;
   mouseTracking: boolean;
 }
 export const Config: z<Config> = z.object({
@@ -30,7 +31,7 @@ export const Config: z<Config> = z.object({
   maxOutputChars: z.number().min(1000).max(100_000_000).step(1).default(1_000_000),
   resumeSessionId: z.string().default(''),
   resumeLimit: z.number().min(10).max(1000).step(1).default(100),
-  deepseekProvider: z.union(['deepseek-official', 'deepseek-account'] as const).default('deepseek-official'),
+  deepseekProvider: z.union(['deepseek-official', 'deepseek-account'] as const),
   mouseTracking: z.boolean().default(true),
 });
 
