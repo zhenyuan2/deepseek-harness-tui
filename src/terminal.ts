@@ -12,6 +12,7 @@ import { ScrollbackRenderer } from './ui/scrollback.js';
 import { Transcript } from './ui/transcript.js';
 import { mouseInput } from './ui/mouse.js';
 import { TextSelection } from './ui/selection.js';
+import { Scrollbar } from './ui/Scrollbar.js';
 import { copyText } from './ui/clipboard.js';
 import { TerminalGraphics, type GraphicsCapabilities } from './ui/terminal-graphics.js';
 import { movePicker } from './ui/Picker.js';
@@ -34,6 +35,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   const theme = createTheme(); const editor = new Editor();
   const transcript = new Transcript();
   const selection = new TextSelection();
+  const scrollbar = new Scrollbar();
   const keys = new PassThrough();
   const wasRaw = input.isRaw; const wasFlowing = input.readableFlowing === true;
   let closed = false; let details = false;
@@ -69,13 +71,17 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       const frame = App(view, editor, columns(), rows(), theme, details, Date.now(), transcript, graphics.view);
       while (frame.length < rows()) frame.push('');
       selection.update(frame, columns(), view.approval || view.picker ? undefined : transcript.selectionViewport);
+      const viewport = transcript.selectionViewport;
+      scrollbar.update(columns(), mouseTracking && !view.approval && !view.picker && viewport ? editor.contentRows : 0,
+        viewport?.lines.length ?? 0, viewport?.height ?? 0, viewport?.start ?? 0);
       syncDragScroll();
       const placement = selection.active ? undefined : graphics.view?.placement;
       if (graphics.prepare(placement, columns(), rows())) renderer.invalidate();
-      renderer.render(transcript.takePublished(), selection.overlay(), output.columns || 80, rows(), editor.contentRows, editor.caret);
+      renderer.render(transcript.takePublished(), scrollbar.overlay(selection.overlay(), theme), output.columns || 80, rows(), editor.contentRows, editor.caret);
       graphics.paint(placement);
     } catch (error: unknown) {
       selection.clear();
+      scrollbar.cancel();
       stopDragScroll();
       // Rendering is model-driven. Keep the terminal alive with a bounded
       // diagnostic instead of letting a timer callback throw out of the process.
@@ -134,11 +140,13 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     if (key.name === 'paste-start') pasting = true;
     if (key.name === 'paste-end') pasting = false;
     selection.clear();
+    scrollbar.cancel();
     stopDragScroll();
     handleKey(text, key);
   };
   const mouse = mouseInput(text => { keys.write(text); }, direction => {
     if (!mouseTracking) return;
+    scrollbar.cancel();
     if (selection.reviewing) {
       if (timer !== undefined) { clearTimeout(timer); redraw(); }
       scrollSelection(direction); return;
@@ -154,12 +162,17 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     if (!mouseTracking || closed) return;
     // Incorporate queued changes before interpreting coordinates or committing a copy.
     if (timer !== undefined) { clearTimeout(timer); redraw(); }
+    if (scrollbar.pointer(report, (start, last) => {
+      editor.previewStart = (view.showWelcome ? start === 0 : start >= last) ? undefined : start;
+    })) {
+      selection.clear(); stopDragScroll(); redraw(); return;
+    }
     const text = selection.pointer(report);
     if (selection.reviewing && transcript.selectionViewport) editor.previewStart = transcript.selectionViewport.start;
     syncDragScroll();
     const placement = selection.active ? undefined : graphics.view?.placement;
     if (graphics.prepare(placement, columns(), rows())) renderer.invalidate();
-    renderer.render([], selection.overlay(), output.columns || 80, rows(), editor.contentRows, editor.caret);
+    renderer.render([], scrollbar.overlay(selection.overlay(), theme), output.columns || 80, rows(), editor.contentRows, editor.caret);
     graphics.paint(placement);
     if (text) copy(text);
   }, response => graphics.response(response));
