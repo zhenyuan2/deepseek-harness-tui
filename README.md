@@ -1,6 +1,8 @@
 # DeepSeek Harness TUI
 
-A terminal interface for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Chat with your agent, review tool output and file diffs, and approve actions from the terminal—with streaming Markdown, model selection, and conversation history.
+A terminal interface for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+
+![DeepSeek Harness TUI welcome screen with the DeepSeek Harness](assets/welcome-screen.png)
 
 ## Installation
 
