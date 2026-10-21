@@ -12,7 +12,7 @@ export const statuslineFields = [
   { id: 'context', label: 'Context', description: 'Latest reported request input / model capacity; not live usage' },
   { id: 'input', label: 'Input', description: 'Conversation total input tokens, including cache reads and writes' },
   { id: 'output', label: 'Output', description: 'Conversation total output tokens, including reasoning' },
-  { id: 'cache', label: 'Cache hit rate', description: 'Conversation cache-read / total input; — when unreported' },
+  { id: 'cache', label: 'Cache hit rate', description: 'Conversation cache-read / total input; — when any request omits cache reads' },
 ] as const;
 export type StatuslineField = typeof statuslineFields[number]['id'];
 export const defaultStatusline: readonly StatuslineField[] = ['model', 'reasoning'];
@@ -70,6 +70,8 @@ export class TokenStats {
     if (usage.cacheReadTokens === undefined) this.unknownCacheSamples += sign;
   }
   get cacheHitRate(): number | undefined {
-    return this.samples && !this.unknownCacheSamples && this.input > 0 ? this.cacheRead / this.input : undefined;
+    // Missing cache data is unknown, including across provider switches.
+    // Adapters must report an explicit zero when they can establish no hits.
+    return this.samples > 0 && this.unknownCacheSamples === 0 && this.input > 0 ? this.cacheRead / this.input : undefined;
   }
 }
