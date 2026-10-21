@@ -2,7 +2,9 @@
 
 A terminal interface for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
-<img src="assets/welcome-screen.png" alt="DeepSeek Harness TUI welcome screen with the DeepSeek Harness" width="720">
+<p align="center">
+  <img src="assets/welcome-screen.png" alt="DeepSeek Harness TUI welcome screen with the DeepSeek Harness" width="720">
+</p>
 
 ## Installation
 
