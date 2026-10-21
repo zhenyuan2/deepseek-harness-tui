@@ -45,9 +45,9 @@ export class TerminalGraphics {
     this.write(`\x1b_Gi=${this.id + 1},s=1,v=1,a=q,t=d,f=100;${queryPixel}${st}\x1b[c\x1b[16t\x1b[?80$p`);
     this.timer = setTimeout(() => {
       this.timer = undefined;
-      // VS Code's image addon can acknowledge Kitty queries without drawing it.
-      const detected = process.env.TERM_PROGRAM === 'vscode' ? this.sixel ? 'sixel' : 'none'
-        : this.kitty ? 'kitty' : this.sixel ? 'sixel' : 'none';
+      // Kitty carries the lossless PNG at the terminal's native resolution. VS Code
+      // has implemented it since 1.110; older image addons simply ignore the query.
+      const detected = this.kitty ? 'kitty' : this.sixel ? 'sixel' : 'none';
       const chosen = this.override === 'kitty' || this.override === 'sixel' ? this.override
         : detected;
       if (chosen !== 'sixel' || this.displayMode !== 3) void this.activate(chosen);
@@ -61,10 +61,21 @@ export class TerminalGraphics {
     const kitty = sequence.match(/^\x1b_G([^;]*);([^\x1b]*)\x1b\\$/);
     if (kitty) {
       const id = Number(kitty[1]!.match(/(?:^|,)i=(\d+)/)?.[1]);
-      if (id === this.id + 1) this.kitty = kitty[2]!.startsWith('OK');
+      if (id === this.id + 1) {
+        this.kitty = kitty[2]!.startsWith('OK');
+        // The reply can arrive after the startup deadline while the terminal is
+        // still draining the first frame. Upgrade instead of keeping Sixel.
+        if (this.kitty && this.timer === undefined && this.protocol !== 'kitty'
+          && this.override !== 'sixel' && this.override !== 'none') void this.activate('kitty');
+      }
       if (id === this.id && !kitty[2]!.startsWith('OK')) {
-        this.capabilities.protocol = undefined;
-        this.protocol = 'none'; this.view = undefined; this.changed();
+        // A terminal can accept the probe yet reject the real placement; keep
+        // the portrait by falling back to Sixel instead of the character art.
+        if (this.override !== 'kitty' && this.sixel && this.displayMode !== 3) void this.activate('sixel');
+        else {
+          this.capabilities.protocol = undefined;
+          this.protocol = 'none'; this.view = undefined; this.changed();
+        }
       }
       return;
     }
@@ -159,7 +170,13 @@ export class TerminalGraphics {
     const old = this.displayed;
     this.displayed = undefined; this.key = '';
     if (!old) return false;
-    let content = this.uploaded ? `\x1b_Ga=d,d=i,i=${this.id},p=1,q=2${st}` : '';
+    let content = '';
+    if (this.uploaded) {
+      content = `\x1b_Ga=d,d=i,i=${this.id},p=1,q=2${st}`;
+      // Lowercase d=i removes the placement while retaining uploaded image data.
+      // VS Code's image addon treats d=i like d=I and releases the data too.
+      if (process.env.TERM_PROGRAM === 'vscode') this.uploadedSize = '';
+    }
     // ECH clears Sixel pixels too; bound erasure after shrinking the viewport.
     const width = Math.min(old.width, columns - old.left);
     if (width > 0) for (let y = old.top; y < Math.min(rows, old.top + old.height); y++) {
