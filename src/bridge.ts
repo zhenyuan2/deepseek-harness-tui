@@ -81,8 +81,12 @@ export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel,
         resolve(outcome);
       };
       const abort = (): void => { finish('cancelled'); };
+      // `displayReason` is the asker's localized, user-facing text; `reason` is
+      // the audit explanation and may contain internal wording such as
+      // "escalate sandbox to ...".
+      const reason = request.displayReason?.en || request.reason;
       const prompt = {
-        text: `${request.toolName}: ${request.reason ?? 'Harness requests approval for this action.'}`,
+        text: reason ?? `${request.toolName} needs your approval before it can run.`,
         toolName: request.toolName,
         arguments: request.callId ? view.rows.find(row => row.toolCallId === request.callId)?.tool?.arguments : undefined,
         cwd: agent.session.header?.cwd ?? process.cwd(),

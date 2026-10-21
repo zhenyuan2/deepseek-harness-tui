@@ -18,14 +18,26 @@ export function createInputHandler(view: ViewModel, editor: Editor, actions: Act
       pasted = ''; schedule(); return;
     }
     if (key.name === 'escape') {
-      if (view.picker && !view.approval) view.picker.cancel();
-      else { view.approval?.answer('cancelled'); actions.cancel(); }
+      // Reject this request and return control to the composer so the user can
+      // say what to do instead. A second Esc then stops a still-running turn.
+      if (view.approval) view.approval.answer('rejected');
+      else if (view.picker) view.picker.cancel();
+      else actions.cancel();
       schedule(); return;
     }
     if (view.approval) {
       if (key.name === 'pageup' || key.name === 'pagedown') { editor.approvalPage += key.name === 'pageup' ? -1 : 1; schedule(); return; }
-      if (text?.toLowerCase() === 'y') view.approval.answer('allowed-once');
-      if (text?.toLowerCase() === 'n') view.approval.answer('rejected');
+      if (key.name === 'up' || key.name === 'down') {
+        editor.approvalSelection = key.name === 'up' ? 0 : 1;
+        schedule(); return;
+      }
+      if (key.name === 'return' || key.name === 'enter') {
+        view.approval.answer(editor.approvalSelection === 1 ? 'rejected' : 'allowed-once');
+        return;
+      }
+      const choice = text?.toLowerCase();
+      if (choice === '1' || choice === 'y') view.approval.answer('allowed-once');
+      if (choice === '2' || choice === 'n') view.approval.answer('rejected');
       return;
     }
     if (view.picker) {

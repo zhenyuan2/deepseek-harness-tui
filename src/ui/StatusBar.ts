@@ -23,14 +23,14 @@ export function StatusLines(view: ViewModel, editor: Editor, columns: number, th
   const runningActivity = taskWidth > 0
     ? `${spinner[Math.floor(now / 100) % spinner.length]} ${truncate(task, taskWidth)} · ${elapsed} · ${stopHint}`
     : `${spinner[Math.floor(now / 100) % spinner.length]} ${stopHint}`;
-  const activity = view.approval ? `Approval required${view.pendingApprovals.length > 1 ? ` · ${view.pendingApprovals.length - 1} more pending` : ''}`
+  const activity = view.approval ? `Waiting for your decision${view.pendingApprovals.length > 1 ? ` · ${view.pendingApprovals.length - 1} more waiting` : ''}`
     : running ? runningActivity
     : view.status === 'idle' ? 'Ready' : view.status;
   const activityChips = [activity];
   if (view.queued.length) activityChips.push(`${view.queued.length} queued`);
   if (editor.pastedLines) activityChips.push(`pasted ${editor.pastedLines} lines`);
   if (!running && !view.picker && !view.approval && columns >= 70) activityChips.push('Enter send');
-  const activityLine = theme.paint(running ? 'accent' : 'muted', fitChips(activityChips, columns));
+  const activityLine = theme.paint(view.approval ? 'warning' : running ? 'accent' : 'muted', fitChips(activityChips, columns));
   if (maxLines < 2) return [activityLine];
   // Configuration, rather than changing activity/text widths, determines footer height.
   return view.statusline.length ? [StatusFields(view, view.statusline, columns, theme), activityLine] : [activityLine];

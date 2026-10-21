@@ -6,7 +6,8 @@ import { StatusLines } from './StatusBar.js';
 import { StatuslinePicker } from './StatuslinePicker.js';
 import { Picker } from './Picker.js';
 import type { Theme } from './theme.js';
-import { plain, truncate, wrap } from './text.js';
+import { plain, truncate } from './text.js';
+import { ApprovalFrame } from './approval.js';
 import { WelcomePanel } from './Welcome.js';
 import type { WelcomeImageView } from './terminal-image.js';
 
@@ -23,20 +24,11 @@ export function App(view: ViewModel, editor: Editor, columns: number, rows: numb
   const status = StatusLines(view, editor, columns, theme, now, welcome ? 1 : rows >= 10 ? 2 : 1);
   if (view.approval) {
     editor.contentRows = 0; editor.caret = undefined;
-    const prompt = view.approval;
-    const body = [prompt.text, ...(prompt.cwd ? [`Directory: ${prompt.cwd}`] : []),
-      ...(prompt.arguments ? ['Arguments:', prompt.arguments] : [])].join('\n');
-    const description = wrap(body, Math.max(1, columns - 4));
-    const approvalStatus = capacity >= 8 ? status : [];
-    const available = Math.max(1, capacity - 3 - approvalStatus.length);
-    const pages = Math.max(1, Math.ceil(description.length / available));
-    editor.approvalPage = Math.max(0, Math.min(editor.approvalPage, pages - 1));
-    const shown = description.slice(editor.approvalPage * available, (editor.approvalPage + 1) * available);
-    return [truncate(theme.paint('warning', '  ◆ Permission needed'), columns), ...shown.map(line => `    ${line}`),
-      ...Array<string>(Math.max(0, available - shown.length)).fill(''),
-      truncate(columns >= 26 ? `  ${editor.approvalPage + 1}/${pages} · PgUp/PgDn details`
-        : `PgUp/PgDn ${editor.approvalPage + 1}/${pages}`, columns),
-      truncate(columns >= 38 ? '  y allow once · n reject · Esc cancel' : 'y yes n no Esc', columns), ...approvalStatus];
+    const approval = ApprovalFrame(view.approval, columns, capacity, theme, status,
+      editor.approvalPage, editor.approvalSelection);
+    editor.approvalPage = approval.page;
+    editor.approvalSelection = approval.selection;
+    return approval.lines;
   }
   if (view.picker) {
     editor.contentRows = 0; editor.caret = undefined;

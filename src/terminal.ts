@@ -65,7 +65,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     if (closed) return;
     try {
       consumeScreenClear();
-      if (view.approval !== lastApproval) { editor.approvalPage = 0; lastApproval = view.approval; }
+      if (view.approval !== lastApproval) { editor.approvalPage = 0; editor.approvalSelection = 0; lastApproval = view.approval; }
       if (header) { transcript.append(Header(title, view.model, view.cwd || process.cwd(), columns(), theme)); header = false; }
       transcript.append(Messages(view.takeCompleted(), columns(), theme));
       const frame = App(view, editor, columns(), rows(), theme, details, Date.now(), transcript, graphics.view);

@@ -22,7 +22,14 @@ export interface Row {
   tool?: ToolState;
 }
 export type ApprovalDecision = 'allowed-once' | 'rejected' | 'cancelled';
-export interface ApprovalPrompt { text: string; toolName?: string; arguments?: string; cwd?: string; answer(decision: ApprovalDecision): void }
+export interface ApprovalPrompt {
+  /** Human-readable explanation of why permission is required. */
+  text: string;
+  toolName?: string;
+  arguments?: string;
+  cwd?: string;
+  answer(decision: ApprovalDecision): void;
+}
 export const DEFAULT_MAX_OUTPUT_CHARS = 1_000_000;
 export interface PickerOption {
   id: string;

@@ -15,6 +15,7 @@ export class Editor {
   selection = 0;
   pastedLines = 0;
   approvalPage = 0;
+  approvalSelection = 0;
   /** Last rendered welcome mode; prevents notice scrolling from leaking into chat history. */
   welcome?: boolean;
   previewStart?: number;
