@@ -2,7 +2,7 @@
 
 A terminal interface for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
-![DeepSeek Harness TUI welcome screen with the DeepSeek Harness](assets/welcome-screen.png)
+<img src="assets/welcome-screen.png" alt="DeepSeek Harness TUI welcome screen with the DeepSeek Harness" width="720">
 
 ## Installation
 
@@ -39,13 +39,13 @@ deepseek-harness-tui
 
 ### Source
 
-Clone Harness and this repository into the same parent directory:
+Create a workspace with both repositories as sibling directories. `npm run setup` expects this layout by default:
 
 ```sh
 mkdir harness-workspace
 cd harness-workspace
 
-git clone --branch dsh-v0.2.1-rc.2 https://github.com/deepseek-ai/deepseek-harness.git
+git clone https://github.com/deepseek-ai/deepseek-harness.git
 git clone https://github.com/zhenyuan2/deepseek-harness-tui.git
 ```
 
@@ -60,25 +60,11 @@ pnpm run build
 Install and start the TUI:
 
 ```sh
-cd ../deepseek-harness-tui
+cd deepseek-harness-tui
 npm install
 npm run setup
 npm run build
 npm start
 ```
 
-For a different Harness location, use `npm run setup -- /path/to/deepseek-harness`. When running from source, settings and sessions are stored in `.dsh-home/`.
-
-**Update**
-
-Close the TUI, then run from the TUI repository:
-
-```sh
-git pull --ff-only
-npm install
-npm run setup
-npm run build
-npm start
-```
-
-Harness can be updated independently. After updating a Harness checkout, rebuild it and rerun `npm run setup` and `npm run build` here.
+By default, `npm run setup` links to `../deepseek-harness`. For a different Harness location, use `npm run setup -- /path/to/deepseek-harness`. When running from source, settings and sessions are stored in `.dsh-home/`.
