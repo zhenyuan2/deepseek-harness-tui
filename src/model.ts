@@ -72,6 +72,8 @@ export class ViewModel {
   approval?: ApprovalPrompt;
   pendingApprovals: ApprovalPrompt[] = [];
   queued: { id: string; text: string }[] = [];
+  /** Submitted image messages that have not finished attachment admission. */
+  pendingAdmissions = 0;
   startedAt?: number;
   private sequence = 0;
   private live = new Map<Row['kind'], Row>();

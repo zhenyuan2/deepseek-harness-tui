@@ -10,7 +10,8 @@ import type {} from '@deepseek-ai/dsh-session-query';
 import type {} from '@deepseek-ai/dsh-agent-default-model';
 import { connect, projectSessionEvent } from './bridge.js';
 import { ViewModel, type PickerOption, type PickerState } from './model.js';
-import type { Actions } from './terminal.js';
+import type { Actions, SubmitOutcome } from './terminal.js';
+import type { PendingImage } from './ui/clipboard-image.js';
 
 /** @deprecated Legacy configuration value; Harness manages provider availability. */
 export type DeepSeekProvider = 'deepseek-official' | 'deepseek-account';
@@ -70,13 +71,14 @@ export class TuiRuntime {
     view.model = `${selection.current!.provider}/${selection.current!.model}`;
     view.reasoning = selection.current!.reasoningEffort ?? '';
     const commands = { resume: (id?: string) => this.openResume(id), model: (route?: string, effort?: string) => this.openModel(route, effort), statusline: () => this.openStatusline(), newSession: (clearScreen?: boolean) => this.newSession(clearScreen) };
-    const pending: string[] = [];
+    const pending: { text: string; images?: readonly PendingImage[]; resolve(outcome: SubmitOutcome): void }[] = [];
+    const rejectPending = (): void => { for (const input of pending.splice(0)) input.resolve(false); };
     let creating = false;
     let creation: AbortController | undefined;
-    const actions = connect(this.ctx, undefined, view, this.quit, selection, commands, text => {
-      if (this.lifetime.signal.aborted) return;
-      if (creation?.signal.aborted) { view.add('system', 'Startup is cancelling. Recall your message with ↑ and retry when ready.'); return; }
-      pending.push(text);
+    const actions = connect(this.ctx, undefined, view, this.quit, selection, commands, (text, images) => new Promise<SubmitOutcome>(resolve => {
+      if (this.lifetime.signal.aborted) { resolve(false); return; }
+      if (creation?.signal.aborted) { view.add('system', 'Startup is cancelling. Retry when ready.'); resolve(false); return; }
+      pending.push({ text, images, resolve });
       if (creating) return;
       view.welcomeDismissed = true;
       creating = true; creation = new AbortController(); view.setStatus('running');
@@ -92,24 +94,29 @@ export class TuiRuntime {
           view.sessionId = candidate.handle.agent.session.id;
           view.setStatus(candidate.handle.agent.status);
           Object.assign(actions, connect(this.ctx, candidate.handle.agent, view, this.quit, selection, commands));
-          for (const input of pending.splice(0)) actions.submit(input);
+          for (const input of pending.splice(0)) {
+            const result = actions.submit(input.text, input.images);
+            if (result) void result.then(input.resolve, () => input.resolve(false));
+            else input.resolve(true);
+          }
         } catch (error) {
           if (!this.lifetime.signal.aborted && !creation?.signal.aborted) {
             view.setStatus('idle');
             view.add('error', `Could not start conversation: ${error instanceof Error ? error.message : String(error)}`);
           }
-          pending.length = 0;
+          rejectPending();
         } finally {
-          if (creation?.signal.aborted) { pending.length = 0; if (this.current === state) view.setStatus('idle'); }
+          rejectPending();
+          if (creation?.signal.aborted && this.current === state) view.setStatus('idle');
           creation = undefined; creating = false;
         }
       })();
       this.operations.add(work);
       void work.then(() => { this.operations.delete(work); });
-    });
+    }));
     const cancelDraft = actions.cancel;
     actions.cancel = () => {
-      if (creating) { creation?.abort(); pending.length = 0; view.add('system', 'Cancelling conversation startup…'); }
+      if (creating) { creation?.abort(); rejectPending(); view.add('system', 'Cancelling conversation startup…'); }
       cancelDraft();
     };
     const previous = this.current;
@@ -190,6 +197,9 @@ export class TuiRuntime {
 
   private idle(state = this.current): state is RuntimeSession {
     if (!state) return false;
+    if (state.view.pendingAdmissions) {
+      state.view.add('error', 'Wait for image attachments to finish or press Esc before switching sessions or models.'); return false;
+    }
     if ((state.handle?.agent.status ?? state.view.status) !== 'idle' || state.view.queued.length || state.view.approval) {
       state.view.add('error', 'Stop the current turn and clear queued input before switching sessions or models.'); return false;
     }

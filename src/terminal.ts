@@ -14,25 +14,36 @@ import { mouseInput } from './ui/mouse.js';
 import { TextSelection } from './ui/selection.js';
 import { Scrollbar } from './ui/Scrollbar.js';
 import { copyText } from './ui/clipboard.js';
+import { readClipboardImage as readSystemClipboard, type ImageLimits, type PendingImage } from './ui/clipboard-image.js';
 import { TerminalGraphics, type GraphicsCapabilities } from './ui/terminal-graphics.js';
 import { movePicker } from './ui/Picker.js';
 import { createTheme } from './ui/theme.js';
 import { plain, truncate } from './ui/text.js';
 export { plain, graphemes, width, wrap } from './ui/text.js';
-export interface Actions { submit(text: string): void; cancel(): void; quit(): void }
+export type ImageFailureReason = 'model-unsupported' | 'cancelled' | 'failed';
+export interface SubmitResult { readonly accepted: boolean; readonly reason?: ImageFailureReason }
+export type SubmitOutcome = boolean | SubmitResult;
+export interface Actions {
+  /** Image submissions settle only after admission; a false result leaves the draft recallable. */
+  submit(text: string, images?: readonly PendingImage[]): void | Promise<SubmitOutcome>;
+  imageLimits?(): ImageLimits;
+  cancel(): void;
+  quit(): void;
+}
 // Conversation mounts share terminal support, but never reuse deleted image IDs.
 const graphicsCapabilities = new WeakMap<object, GraphicsCapabilities>();
 
 export function openTerminal(view: ViewModel, actions: Actions, title: string,
   ports = { input: process.stdin, output: process.stdout },
-  options: { mouseTracking?: boolean; exit?: (code: number) => void; copy?: (text: string) => void } = {}): () => void {
+  options: { mouseTracking?: boolean; exit?: (code: number) => void; copy?: (text: string) => void;
+    readClipboardImage?: () => Promise<PendingImage | undefined> } = {}): () => void {
   const { input, output } = ports;
   const mouseTracking = options.mouseTracking ?? true;
   if (!input.isTTY || !output.isTTY) throw new Error('DeepSeek Harness TUI requires an interactive terminal (stdin and stdout TTY).');
   const write = output.write.bind(output);
   const copy = options.copy ?? ((text: string) => copyText(text, write));
   const renderer = new ScrollbackRenderer(write);
-  const theme = createTheme(); const editor = new Editor();
+  const theme = createTheme(); const editor = new Editor(() => actions.imageLimits?.(), () => schedule());
   const transcript = new Transcript();
   const selection = new TextSelection();
   const scrollbar = new Scrollbar();
@@ -95,6 +106,33 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     }
   };
   const schedule = (): void => { if (!closed && timer === undefined) timer = setTimeout(redraw, 25); };
+  // Paste protocols carry text only. Reading the OS clipboard is the part of
+  // image paste that Codex and Claude Code implement in-process, not in the terminal.
+  const clipboardReader = options.readClipboardImage ?? (() => readSystemClipboard({ limits: editor.imageLimits }));
+  const pasteClipboardImage = (): void | Promise<void> => {
+    if (closed || editor.clipboardRead || editor.droppedRead || editor.submitting) return;
+    const slot = editor.insertPendingImage('Clipboard image');
+    const read = Symbol('clipboard-read');
+    editor.clipboardRead = read;
+    editor.notify('Reading clipboard image…', null);
+    return Promise.resolve().then(() => clipboardReader()).then(image => {
+      if (closed || editor.clipboardRead !== read) return;
+      if (!image) {
+        editor.failPendingImage(slot, '');
+        editor.notify('No image on clipboard · drag an image file or paste its path');
+        return;
+      }
+      if (!editor.resolvePendingImage(slot, [image])) editor.clearNotice();
+      schedule();
+    }).catch((error: unknown) => {
+      if (!closed && editor.clipboardRead === read) {
+        editor.failPendingImage(slot, '');
+        editor.notify(error instanceof Error ? error.message : String(error));
+      }
+    }).finally(() => {
+      if (editor.clipboardRead === read) { editor.clipboardRead = undefined; schedule(); }
+    });
+  };
   let capabilities = graphicsCapabilities.get(output);
   if (!capabilities) { capabilities = {}; graphicsCapabilities.set(output, capabilities); }
   const graphics = new TerminalGraphics(write, schedule, undefined, undefined, capabilities);
@@ -124,7 +162,8 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     dragTick.unref();
   };
 
-  const handleKey = createInputHandler(view, editor, actions, schedule, () => { details = !details; });
+  const handleKey = createInputHandler(view, editor, actions, schedule, () => { details = !details; }, pasteClipboardImage,
+    undefined, () => !closed);
   // Pasted keys must never copy or trigger selection shortcuts.
   let pasting = false;
   const onKey = (text: string | undefined, key: Key = {}): void => {
@@ -240,6 +279,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   const close = (emergency = false): void => {
     if (closed) return;
     closed = true;
+    editor.cancelImageReads();
     if (timer !== undefined) clearTimeout(timer);
     if (tick !== undefined) clearInterval(tick);
     stopDragScroll();
@@ -315,7 +355,9 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     keys.on('keypress', onKey); input.on('data', onData);
     output.on('resize', onResize);
     unsubscribe = view.subscribe(schedule);
-    tick = setInterval(() => { if (view.status === 'running' && !view.approval) schedule(); }, 100);
+    tick = setInterval(() => {
+      if ((view.status === 'running' || view.pendingAdmissions || editor.clipboardRead || editor.droppedRead) && !view.approval) schedule();
+    }, 100);
     tick.unref();
     redraw();
     if (view.showWelcome) graphics.start();

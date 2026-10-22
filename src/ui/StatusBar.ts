@@ -12,25 +12,36 @@ function tokens(value: number | undefined): string {
 }
 export function StatusLines(view: ViewModel, editor: Editor, columns: number, theme: Theme, now: number, maxLines = 2): string[] {
   const running = view.status === 'running';
+  const admitting = view.pendingAdmissions > 0;
+  const reading = !!(editor.clipboardRead || editor.droppedRead);
+  const busy = running || admitting || reading;
   const tools = view.active.filter(row => row.tool?.status === 'running');
   const task = tools.length ? `${plain(tools.at(-1)!.tool!.name)}${tools.length > 1 ? ` +${tools.length - 1}` : ''}`
     : view.active.some(row => row.kind === 'assistant' && row.state === 'live') ? 'Responding'
     : view.active.some(row => row.kind === 'reasoning' && row.state === 'live') ? 'Thinking' : 'Working';
   const stopHint = view.picker ? 'Esc close' : 'Esc stop';
   const elapsed = `${Math.max(0, Math.floor((now - (view.startedAt ?? now)) / 1000))}s`;
-  const extra = view.queued.length || editor.pastedLines ? 2 : 0;
+  const extra = view.queued.length || editor.pastedLines || editor.attachments.length ? 2 : 0;
   const taskWidth = Math.max(0, columns - cellWidth(`  ⠋  · ${elapsed} · ${stopHint}`) - extra);
   const runningActivity = taskWidth > 0
     ? `${spinner[Math.floor(now / 100) % spinner.length]} ${truncate(task, taskWidth)} · ${elapsed} · ${stopHint}`
     : `${spinner[Math.floor(now / 100) % spinner.length]} ${stopHint}`;
+  const admissionActivity = columns >= 40 ? `${spinner[Math.floor(now / 100) % spinner.length]} Attaching images · Esc stop`
+    : columns >= 24 ? `${spinner[Math.floor(now / 100) % spinner.length]} Images · Esc stop` : 'Images · Esc';
+  const readingActivity = columns >= 40 ? `${spinner[Math.floor(now / 100) % spinner.length]} Reading image · Enter waits`
+    : columns >= 24 ? `${spinner[Math.floor(now / 100) % spinner.length]} Reading · Enter waits` : 'Reading image';
   const activity = view.approval ? `Waiting for your decision${view.pendingApprovals.length > 1 ? ` · ${view.pendingApprovals.length - 1} more waiting` : ''}`
+    : admitting ? admissionActivity
+    : reading ? readingActivity
     : running ? runningActivity
     : view.status === 'idle' ? 'Ready' : view.status;
   const activityChips = [activity];
+  if (admitting) activityChips.push(`${view.pendingAdmissions} pending`);
   if (view.queued.length) activityChips.push(`${view.queued.length} queued`);
   if (editor.pastedLines) activityChips.push(`pasted ${editor.pastedLines} lines`);
-  if (!running && !view.picker && !view.approval && columns >= 70) activityChips.push('Enter send');
-  const activityLine = theme.paint(view.approval ? 'warning' : running ? 'accent' : 'muted', fitChips(activityChips, columns));
+  if (editor.attachments.length) activityChips.push(`${editor.attachments.length} image${editor.attachments.length === 1 ? '' : 's'}`);
+  if (!busy && !view.picker && !view.approval && columns >= 70) activityChips.push('Enter send');
+  const activityLine = theme.paint(view.approval ? 'warning' : busy ? 'accent' : 'muted', fitChips(activityChips, columns));
   if (maxLines < 2) return [activityLine];
   // Configuration, rather than changing activity/text widths, determines footer height.
   return view.statusline.length ? [StatusFields(view, view.statusline, columns, theme), activityLine] : [activityLine];

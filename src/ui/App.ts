@@ -35,10 +35,29 @@ export function App(view: ViewModel, editor: Editor, columns: number, rows: numb
     return view.picker.statuslineDraft ? StatuslinePicker(view, columns, capacity, theme)
       : Picker(view.picker, columns, capacity, theme);
   }
-  const composer = Composer(editor, columns, theme, Math.min(4, Math.max(1, capacity - 3 - status.length)));
+  const notice = editor.notice ? [truncate(`  ${theme.paint('muted', plain(editor.notice))}`, columns)] : [];
+  const composer = Composer(editor, columns, theme,
+    Math.min(4, Math.max(1, capacity - 3 - status.length - notice.length)));
   const menu = CommandMenu(editor, columns, theme);
   const rule = theme.paint('border', '─'.repeat(columns));
-  const footer = welcome ? [...composer, ...status] : [rule, ...composer, rule, ...status];
+  const statusLines = [...status];
+  let topRule = !welcome, bottomRule = !welcome;
+  const footerLines = (): string[] => [
+    ...(topRule ? [rule] : []), ...composer, ...notice,
+    ...(bottomRule ? [rule] : []), ...statusLines,
+  ];
+  // Tiny terminals keep the composer visible by dropping decoration and
+  // non-essential status first.
+  while (footerLines().length > capacity) {
+    if (notice.length) notice.length = 0;
+    else if (topRule) topRule = false;
+    else if (bottomRule) bottomRule = false;
+    else if (statusLines.length > 1) statusLines.pop();
+    else if (statusLines.length) statusLines.length = 0;
+    else break;
+  }
+  const footer = footerLines();
+  const beforeComposer = topRule ? 1 : 0;
   const menuBudget = Math.max(0, capacity - footer.length);
   const visibleMenu = menu.slice(0, menuBudget);
   const previewBudget = Math.max(0, capacity - footer.length - visibleMenu.length);
@@ -66,6 +85,6 @@ export function App(view: ViewModel, editor: Editor, columns: number, rows: numb
       : Conversation(active, columns, theme, details, previewBudget, editor);
   }
   const frame = [...Array<string>(Math.max(0, previewBudget - body.length)).fill(''), ...body, ...visibleMenu, ...footer];
-  if (editor.caret) editor.caret = { row: editor.caret.row + previewBudget + visibleMenu.length + (welcome ? 0 : 1), column: editor.caret.column };
+  if (editor.caret) editor.caret = { row: editor.caret.row + previewBudget + visibleMenu.length + beforeComposer, column: editor.caret.column };
   return frame;
 }

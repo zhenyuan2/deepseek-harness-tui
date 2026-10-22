@@ -4,9 +4,41 @@ import { createUserMessage, hasMethod } from './harness.js';
 import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent';
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
+import type { ContentBlock, ImageBlock } from '@deepseek-ai/dsh-llm';
 import type { ApprovalDecision, ViewModel } from './model.js';
-import type { Actions } from './terminal.js';
+import type { Actions, SubmitResult } from './terminal.js';
+import { DEFAULT_IMAGE_LIMITS, validateImages, type ImageLimits, type PendingImage } from './ui/clipboard-image.js';
 import { commands, isCommand } from './ui/commands.js';
+
+type ImageAttachmentRef = ImageBlock['attachment'];
+interface AttachmentWriter {
+  readonly imageLimits?: ImageLimits;
+  saveImages(inputs: readonly { data: Uint8Array; mediaType: PendingImage['mediaType']; name?: string }[]):
+    Promise<readonly ImageAttachmentRef[]>;
+}
+
+function attachmentService(ctx: Context): AttachmentWriter | undefined {
+  return (ctx as unknown as { get(name: string): unknown }).get('attachments') as AttachmentWriter | undefined;
+}
+
+/** Text plus numbered image/file markers; shared by live events, queued chips, and replay. */
+export function messageText(content: readonly ContentBlock[]): string {
+  let images = 0;
+  return content.flatMap(block => {
+    if (block.type === 'text') return block.text ? [block.text] : [];
+    if (block.type === 'image') return [`[Image #${++images}]`];
+    if (block.type === 'file') return [`[File: ${block.attachment.name}]`];
+    return [`[${block.type}]`];
+  }).join('\n');
+}
+
+async function saveImages(ctx: Context, images: readonly PendingImage[]): Promise<readonly ImageAttachmentRef[]> {
+  const service = attachmentService(ctx);
+  if (!service?.saveImages) throw new Error('Image attachments are unavailable: the Harness attachment service is not mounted.');
+  validateImages(images, service.imageLimits ?? DEFAULT_IMAGE_LIMITS);
+  return service.saveImages(images.map(image => ({ data: image.data, mediaType: image.mediaType,
+    ...(image.name ? { name: image.name } : {}) })));
+}
 
 /** Errors already surfaced by `agent/error`, consumed by the matching turn end. */
 export interface ProjectionState { reportedErrors: Map<string, number> }
@@ -35,9 +67,51 @@ function consumeError(state: ProjectionState, message: string): boolean {
 /** Observe one owned agent; other agents continue through other answerers. */
 export interface SessionCommands { resume(id?: string): void; model(route?: string, effort?: string): void; statusline?(): void; newSession?(clearScreen?: boolean): void }
 export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel, quit: () => void, selection?: ModelSelectionRef,
-  commandsUI?: SessionCommands, startConversation?: (text: string) => void): Actions & { dispose(): void } {
+  commandsUI?: SessionCommands, startConversation?: Actions['submit']): Actions & { dispose(): void } {
   const projection: ProjectionState = { reportedErrors: new Map() };
   const stops: (() => void)[] = [];
+  let disposed = false;
+  let generation = 0;
+  const admissions = new Set<(accepted: boolean, reason?: SubmitResult['reason']) => void>();
+  // Image admission is asynchronous; chain later submissions behind it so a
+  // prompt typed after an image never reaches the agent first.
+  let delivery: Promise<void> | undefined;
+  const queue = (task: () => void | Promise<void>): void => {
+    const fail = (error: unknown): void => {
+      if (!disposed) view.add('error', error instanceof Error ? error.message : String(error));
+    };
+    if (!delivery) {
+      try {
+        const result = task();
+        if (result && typeof (result as Promise<void>).then === 'function') {
+          const current = (result as Promise<void>).catch(fail);
+          delivery = current;
+          void current.then(() => { if (delivery === current) delivery = undefined; });
+        }
+      } catch (error) { fail(error); }
+      return;
+    }
+    const previous = delivery;
+    const current = previous.then(task, task).then(() => {}, fail);
+    delivery = current;
+    void current.then(() => { if (delivery === current) delivery = undefined; });
+  };
+  const deliver = (text: string, refs: readonly ImageAttachmentRef[] = [], images: readonly PendingImage[] = []): boolean => {
+    if (disposed || !agent) return false;
+    const content: ContentBlock[] = [];
+    let offset = 0;
+    for (const [index, attachment] of refs.entries()) {
+      const position = Math.max(offset, Math.min(text.length, images[index]?.textOffset ?? text.length));
+      if (position > offset) content.push({ type: 'text', text: text.slice(offset, position) });
+      content.push({ type: 'image', attachment });
+      offset = position;
+    }
+    if (offset < text.length) content.push({ type: 'text', text: text.slice(offset) });
+    const message = createUserMessage({ content, source: { kind: 'user' } });
+    view.enqueue(message.id, messageText(content));
+    try { agent.followup(message); return true; }
+    catch (error) { view.dequeue(message.id); view.add('error', error instanceof Error ? error.message : String(error)); return false; }
+  };
   stops.push(ctx.on('agent/status', ({ agent: subject, status }) => {
     if (subject !== agent) return;
     view.setStatus(status);
@@ -101,12 +175,16 @@ export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel,
   }));
 
   return {
-    submit(text) {
+    imageLimits() { return attachmentService(ctx)?.imageLimits ?? DEFAULT_IMAGE_LIMITS; },
+    submit(text, images = []) {
+      if (images.length && isCommand(text)) { view.add('error', 'Remove attached images before sending a slash command.'); return; }
       if (text === '/quit' || text === '/exit') { quit(); return; }
       if (text === '/help') {
         view.add('system', [
           ...commands.map(command => `${command.usage}  ${command.description}`), '',
           'Enter send · Ctrl+J / Alt+Enter newline · Tab complete command',
+          'Ctrl+V / Alt+V attach clipboard image · drop an image file or paste its path',
+          'Images appear at the cursor · Backspace / Delete removes the adjacent image',
           '↑/↓ edit lines or recall history · Alt+↑/↓ history · Ctrl+U clear input',
           'F2 toggle live details · Ctrl+L clear screen (keep chat) · Esc stop · Ctrl+C exit',
           'PgUp / PgDn browse conversation · Ctrl+W delete word · Ctrl+K delete to line end',
@@ -141,6 +219,7 @@ export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel,
       else if (text === '/model') view.add('system', `Model: ${view.model}\n/model provider/model switches this session while idle.`);
       else if (text.startsWith('/model ')) {
         if (!selection) { view.add('error', 'Model switching is unavailable in this runtime.'); return; }
+        if (view.pendingAdmissions) { view.add('error', 'Wait for image attachments to finish or press Esc before switching models.'); return; }
         if (view.status !== 'idle' || view.queued.length) { view.add('error', 'Stop the current turn before switching models.'); return; }
         const route = text.slice(7).trim(); const separator = route.indexOf('/');
         if (separator < 1 || separator === route.length - 1 || /\s/.test(route)) { view.add('error', 'Usage: /model provider/model'); return; }
@@ -161,17 +240,69 @@ export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel,
         view.add('error', `Usage: ${usage}`);
       }
       else {
-        if (!text.trim()) return;
-        if (!agent) { startConversation?.(text); return; }
-        const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } });
-        view.enqueue(message.id, text);
-        try { agent.followup(message); }
-        catch (error) { view.dequeue(message.id); view.add('error', error instanceof Error ? error.message : String(error)); }
+        if (!text.trim() && !images.length) return;
+        if (!agent) return startConversation ? startConversation(text, images) : images.length ? Promise.resolve(false) : undefined;
+        const ticket = generation;
+        if (!images.length) {
+          queue(() => { if (ticket === generation && !disposed) deliver(text); });
+          return;
+        }
+        return new Promise<SubmitResult>(resolve => {
+          const controller = new AbortController();
+          const finish = (accepted: boolean, reason?: SubmitResult['reason']): void => {
+            // Cancellation may settle this request before its storage operation
+            // returns. Only the first result can release the busy state.
+            if (!admissions.delete(finish)) return;
+            controller.abort();
+            view.pendingAdmissions--; view.changed();
+            resolve(reason ? { accepted, reason } : { accepted });
+          };
+          admissions.add(finish);
+          view.pendingAdmissions++; view.changed();
+          queue(async () => {
+            if (ticket !== generation || disposed) { finish(false, 'cancelled'); return; }
+            try {
+              // Use the route selected for the next turn, rather than a
+              // display label or the model assembled for a previous step.
+              const route = selection?.current ?? agent.options;
+              const llm = ctx.get('llm');
+              if (route?.provider && route.model && llm && hasMethod(llm, 'resolveModelInfo')) {
+                const info = await llm.resolveModelInfo(route.provider, route.model, controller.signal);
+                if (ticket !== generation || disposed) { finish(false, 'cancelled'); return; }
+                // An omitted capability list is unknown, so retain the
+                // Harness compatibility behavior for older providers.
+                if (info.inputModalities !== undefined && !info.inputModalities.includes('image')) {
+                  view.add('error', `Current model ${route.provider}/${route.model} cannot process images. `
+                    + 'Run /model with an empty input, then press ↑ to recall this message.');
+                  finish(false, 'model-unsupported');
+                  return;
+                }
+              }
+              const refs = await saveImages(ctx, images);
+              if (ticket !== generation || disposed) { finish(false, 'cancelled'); return; }
+              const delivered = deliver(text, refs, images);
+              finish(delivered, delivered ? undefined : 'failed');
+            } catch (error) {
+              if (ticket === generation && !disposed) {
+                view.add('error', `Could not attach image: ${error instanceof Error ? error.message : String(error)}`);
+              }
+              finish(false, 'failed');
+            }
+          });
+        });
       }
     },
-    cancel() { agent?.cancel({ kind: 'user' }); view.cancelApprovals('cancelled'); view.queued = []; view.changed(); },
+    cancel() {
+      generation++; delivery = undefined;
+      for (const finish of admissions) finish(false, 'cancelled');
+      agent?.cancel({ kind: 'user' }); view.cancelApprovals('cancelled'); view.queued = []; view.changed();
+    },
     quit,
-    dispose() { for (const stop of stops.splice(0)) stop(); view.cancelApprovals('cancelled'); },
+    dispose() {
+      disposed = true; generation++; delivery = undefined;
+      for (const finish of admissions) finish(false, 'cancelled');
+      for (const stop of stops.splice(0)) stop(); view.cancelApprovals('cancelled');
+    },
   };
 }
 
@@ -183,7 +314,7 @@ export function projectSessionEvent(view: ViewModel, event: SessionEvent, state?
       // Keep injected instructions and runtime snapshots in Harness history, out of the
       // transcript for both live events and session replay.
       if (isInternalContext(event.data.source)) break;
-      view.userMessage(event.data.id, event.data.content.filter(block => block.type === 'text').map(block => block.text).join('\n'));
+      view.userMessage(event.data.id, messageText(event.data.content));
       break;
     case 'assistant/message': {
       const content = event.data.message.content;
