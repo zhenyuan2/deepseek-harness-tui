@@ -211,8 +211,10 @@ export function createInputHandler(view: ViewModel, editor: Editor, actions: Act
     else if (key.name === 'delete') { if (editor.buffer.splice(editor.cursor, 1).length) editor.clearFeedback(); }
     else if (key.name === 'left' || (key.meta && key.name === 'b')) editor.cursor = key.meta || key.ctrl ? editor.wordBoundary(-1) : Math.max(0, editor.cursor - 1);
     else if (key.name === 'right' || (key.meta && key.name === 'f')) editor.cursor = key.meta || key.ctrl ? editor.wordBoundary(1) : Math.min(editor.buffer.length, editor.cursor + 1);
-    else if (key.name === 'home' || (key.ctrl && key.name === 'a')) editor.cursor = editor.lineBoundary(false);
-    else if (key.name === 'end' || (key.ctrl && key.name === 'e')) editor.cursor = editor.lineBoundary(true);
+    else if (key.name === 'home') editor.cursor = key.ctrl ? 0 : editor.lineBoundary(false);
+    else if (key.name === 'end') editor.cursor = key.ctrl ? editor.buffer.length : editor.lineBoundary(true);
+    else if (key.ctrl && key.name === 'a') editor.cursor = editor.lineBoundary(false);
+    else if (key.ctrl && key.name === 'e') editor.cursor = editor.lineBoundary(true);
     else if (key.ctrl && key.name === 'w') { const start = editor.wordBoundary(-1); if (editor.buffer.splice(start, editor.cursor - start).length) editor.clearFeedback(); editor.cursor = start; }
     else if (key.ctrl && key.name === 'k') { if (editor.buffer.splice(editor.cursor, editor.lineBoundary(true) - editor.cursor).length) editor.clearFeedback(); }
     else if (key.ctrl && key.name === 'u') { editor.replace(''); editor.clearAttachments(); }
