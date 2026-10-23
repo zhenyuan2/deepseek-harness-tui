@@ -9,7 +9,7 @@ const cache = new WeakMap<Row, CachedMessage[]>();
 const LIVE_MARKDOWN_LIMIT = 120_000;
 
 export function Message(row: Row, columns: number, theme: Theme, details = false): string[] {
-  const signature = [columns, theme, details, row.text, row.kind, row.state, row.expanded,
+  const signature = [columns, theme, details, row.text, row.kind, row.state, row.expanded, row.folded, row.lateResult,
     row.tool?.name, row.tool?.arguments, row.tool?.output, row.tool?.status, row.tool?.endedAt, row.tool?.diffs];
   const entries = cache.get(row) ?? [];
   const found = entries.find(entry => signature.every((value, i) => value === entry.signature[i]));
@@ -53,7 +53,8 @@ function renderMessage(row: Row, columns: number, theme: Theme, details: boolean
   if (tooLong && start > 0) lines.unshift(theme.paint('muted', `… ${start} earlier characters omitted while streaming`));
   if (lines.length === 0) return [];
   const marker = row.kind === 'user' ? theme.paint('bold', '❯') : row.kind === 'assistant' ? theme.paint('bold', '●') : row.kind === 'error' ? theme.paint('error', '✗') : theme.paint('muted', '·');
-  return [...lines.map((line, i) => `  ${i === 0 ? marker : ' '} ${row.kind === 'system' ? theme.paint('muted', line) : row.kind === 'error' ? theme.paint('error', line) : line}`), ''];
+  const muted = row.kind === 'system' || row.kind === 'compact';
+  return [...lines.map((line, i) => `  ${i === 0 ? marker : ' '} ${muted ? theme.paint('muted', line) : row.kind === 'error' ? theme.paint('error', line) : line}`), ''];
 }
 
 /** Group only contiguous completed tools; chronology and individual detail ids stay intact. */

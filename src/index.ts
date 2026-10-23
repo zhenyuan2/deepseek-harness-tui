@@ -19,6 +19,11 @@ export interface Config {
   title: string;
   maxRows: number;
   maxOutputChars: number;
+  /** Text retained across rows before old archived rows fold to previews. */
+  maxRetainedChars: number;
+  /** Replay window bounds; accounting still folds every event. */
+  replayMaxRows: number;
+  replayMaxChars: number;
   resumeSessionId: string;
   resumeLimit: number;
   /** @deprecated Accepted for existing profiles; no longer restricts providers. */
@@ -29,6 +34,9 @@ export const Config: z<Config> = z.object({
   title: z.string().default('DeepSeek Harness TUI'),
   maxRows: z.number().min(10).max(10000).step(1).default(500),
   maxOutputChars: z.number().min(1000).max(100_000_000).step(1).default(1_000_000),
+  maxRetainedChars: z.number().min(10_000).max(100_000_000).step(1).default(8_000_000),
+  replayMaxRows: z.number().min(10).max(10000).step(1).default(300),
+  replayMaxChars: z.number().min(10_000).max(100_000_000).step(1).default(4_000_000),
   resumeSessionId: z.string().default(''),
   resumeLimit: z.number().min(10).max(1000).step(1).default(100),
   deepseekProvider: z.union(['deepseek-official', 'deepseek-account'] as const),

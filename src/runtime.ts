@@ -8,14 +8,25 @@ import type { LlmModelInfo, LlmResolvedModelInfo, ReasoningEffortId } from '@dee
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-session-query';
 import type {} from '@deepseek-ai/dsh-agent-default-model';
-import { connect, projectSessionEvent } from './bridge.js';
-import { ViewModel, type PickerOption, type PickerState } from './model.js';
+import { connect, createProjectionState, projectSessionEvent } from './bridge.js';
+import { DEFAULT_REPLAY_MAX_CHARS, DEFAULT_REPLAY_MAX_ROWS, ViewModel, type PickerOption, type PickerState } from './model.js';
 import type { Actions, SubmitOutcome } from './terminal.js';
 import type { PendingImage } from './ui/clipboard-image.js';
 
 /** @deprecated Legacy configuration value; Harness manages provider availability. */
 export type DeepSeekProvider = 'deepseek-official' | 'deepseek-account';
-export interface RuntimeConfig { maxRows: number; maxOutputChars: number; resumeLimit: number; statuslinePath?: string; modelPreferencesPath?: string; deepseekProvider?: DeepSeekProvider }
+export interface RuntimeConfig {
+  maxRows: number;
+  maxOutputChars: number;
+  /** Optional so existing embedders and tests keep their compact configs. */
+  maxRetainedChars?: number;
+  replayMaxRows?: number;
+  replayMaxChars?: number;
+  resumeLimit: number;
+  statuslinePath?: string;
+  modelPreferencesPath?: string;
+  deepseekProvider?: DeepSeekProvider;
+}
 export interface RuntimeSession {
   handle?: AgentHandle;
   selection: ModelSelectionRef;
@@ -65,7 +76,7 @@ export class TuiRuntime {
   /** A composer and model choice need no Agent and therefore no storage identity. */
   private startDraft(clearScreen = false): void {
     const selection: ModelSelectionRef = { current: { ...(this.savedSelection ?? this.ctx.agentDefaultModel.currentSelection()) }, assembled: undefined };
-    const view = new ViewModel(this.config.maxRows, this.config.maxOutputChars);
+    const view = new ViewModel(this.config.maxRows, this.config.maxOutputChars, this.config.maxRetainedChars);
     view.statusline = this.statusline;
     view.sessionId = 'Not started'; view.cwd = process.cwd(); view.status = 'idle';
     view.model = `${selection.current!.provider}/${selection.current!.model}`;
@@ -151,17 +162,31 @@ export class TuiRuntime {
   }
 
   private install(candidate: { handle: AgentHandle; selection: ModelSelectionRef }, resumed: boolean): void {
-    const view = new ViewModel(this.config.maxRows, this.config.maxOutputChars);
+    const view = new ViewModel(this.config.maxRows, this.config.maxOutputChars, this.config.maxRetainedChars);
     const agent = candidate.handle.agent;
     const selected = candidate.selection.current!;
     view.statusline = this.statusline;
     view.sessionId = agent.session.id; view.cwd = agent.session.header?.cwd ?? process.cwd();
     view.model = `${selected.provider}/${selected.model}`; view.reasoning = selected.reasoningEffort ?? '';
     view.status = agent.status;
-    if (resumed) { for (const event of agent.session.snapshotEvents()) projectSessionEvent(view, event); view.finishTurn(); }
+    const projection = createProjectionState();
+    if (resumed) {
+      const replayRows = this.config.replayMaxRows ?? DEFAULT_REPLAY_MAX_ROWS;
+      const replayChars = this.config.replayMaxChars ?? DEFAULT_REPLAY_MAX_CHARS;
+      for (const event of agent.session.snapshotEvents()) {
+        projectSessionEvent(view, event, projection, true);
+        // Trimming after every event bounds the peak while tokens still fold
+        // every event; only settled rows are dropped, never live tool cards.
+        view.trimReplay(replayRows, replayChars);
+      }
+      view.finishTurn();
+      if (view.replayOmitted) {
+        view.prependNotice(`Earlier history omitted to keep memory bounded · ${view.replayOmittedRows} earlier entries not shown.`);
+      }
+    }
     const actions = connect(this.ctx, agent, view, this.quit, candidate.selection, {
       resume: id => this.openResume(id), model: (route, effort) => this.openModel(route, effort), statusline: () => this.openStatusline(), newSession: (clearScreen?: boolean) => this.newSession(clearScreen),
-    });
+    }, undefined, projection);
     const previous = this.current;
     const state: RuntimeSession = { ...candidate, view, actions };
     this.current = state;

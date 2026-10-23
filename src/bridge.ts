@@ -5,7 +5,7 @@ import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent';
 import type { ApprovalOutcome } from '@deepseek-ai/dsh-user-approval';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import type { ContentBlock, ImageBlock } from '@deepseek-ai/dsh-llm';
-import type { ApprovalDecision, ViewModel } from './model.js';
+import type { ApprovalDecision, MessageIdentity, Row, ViewModel } from './model.js';
 import type { Actions, SubmitResult } from './terminal.js';
 import { DEFAULT_IMAGE_LIMITS, validateImages, type ImageLimits, type PendingImage } from './ui/clipboard-image.js';
 import { commands, isCommand } from './ui/commands.js';
@@ -40,16 +40,76 @@ async function saveImages(ctx: Context, images: readonly PendingImage[]): Promis
     ...(image.name ? { name: image.name } : {}) })));
 }
 
-/** Errors already surfaced by `agent/error`, consumed by the matching turn end. */
-export interface ProjectionState { reportedErrors: Map<string, number> }
+/** Per-session projection ledgers: identity, idempotency and open tool cards. */
+export interface ProjectionState {
+  /** Errors already surfaced by `agent/error`, consumed by the matching turn end. */
+  reportedErrors: Map<string, number>;
+  /** Durable assistant settlements already folded (seq + turn + step). */
+  handledAssistant: Set<string>;
+  /** Tool results already folded, keyed by callId. */
+  handledToolResults: Set<string>;
+  /** User messages already folded, keyed by durable message id. */
+  handledUsers: Set<string>;
+  /** Running tool cards by callId, so a late result still finds its call. */
+  toolCards: Map<string, Row>;
+}
+
+export function createProjectionState(): ProjectionState {
+  return {
+    reportedErrors: new Map(),
+    handledAssistant: new Set(),
+    handledToolResults: new Set(),
+    handledUsers: new Set(),
+    toolCards: new Map(),
+  };
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Plugin-owned source kinds are extensible and need not be imported by the UI. */
-function isInternalContext(source: { kind: string }): boolean {
-  return source.kind === 'agent-instructions' || source.kind === 'runtime-context';
+type MessageSourceView = { kind?: unknown; form?: unknown; summary?: unknown; plugin?: unknown };
+/**
+ * Source kinds that carry model-facing context, never a human bubble. This is
+ * deliberately a small, explicit set: unknown producer kinds still surface as
+ * a notice instead of being silently dropped or impersonating the user.
+ */
+const INTERNAL_SOURCE_KINDS = new Set([
+  'agent-instructions',
+  'runtime-context',
+  'system-prompt',
+  'goal',
+  'schedule',
+  'skill-invocation',
+  'session-reference',
+  'subagent-settled',
+  'team-message',
+  'user-question-reply',
+  'webhook',
+  'working-directory',
+]);
+
+function sourceView(source: unknown): MessageSourceView {
+  return source && typeof source === 'object' ? source as MessageSourceView : {};
+}
+
+function isCompactionSource(source: MessageSourceView): boolean {
+  return source.kind === 'compact-checkpoint'
+    || source.kind === 'compaction'
+    || (source.kind === 'plugin' && source.plugin === 'compact');
+}
+
+/** How one durable user-role message enters the transcript. */
+function classifySource(source: MessageSourceView): 'user' | 'compact' | 'notice' | 'internal' {
+  if (source.kind === 'user') return 'user';
+  if (isCompactionSource(source)) return 'compact';
+  if (typeof source.kind === 'string' && INTERNAL_SOURCE_KINDS.has(source.kind)) return 'internal';
+  // Instructions/catalogs/snapshots are injected model context even when a
+  // plugin attaches a new producer kind.
+  if (source.form === 'instructions' || source.form === 'catalog' || source.form === 'snapshot') return 'internal';
+  if (source.form === 'notice' || source.form === 'relay' || source.form === 'recall') return 'notice';
+  // Unknown producer: show it as a system notice, never as a user bubble.
+  return 'notice';
 }
 
 function noteError(state: ProjectionState, message: string): void {
@@ -67,11 +127,14 @@ function consumeError(state: ProjectionState, message: string): boolean {
 /** Observe one owned agent; other agents continue through other answerers. */
 export interface SessionCommands { resume(id?: string): void; model(route?: string, effort?: string): void; statusline?(): void; newSession?(clearScreen?: boolean): void }
 export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel, quit: () => void, selection?: ModelSelectionRef,
-  commandsUI?: SessionCommands, startConversation?: Actions['submit']): Actions & { dispose(): void } {
-  const projection: ProjectionState = { reportedErrors: new Map() };
+  commandsUI?: SessionCommands, startConversation?: Actions['submit'], projectionState?: ProjectionState): Actions & { dispose(): void } {
+  const projection = projectionState ?? createProjectionState();
   const stops: (() => void)[] = [];
   let disposed = false;
   let generation = 0;
+  /** Monotone stream fence: a late frame from an old attempt must not land. */
+  let lastStreamRevision = -1;
+  let activeAttempt: string | undefined;
   const admissions = new Set<(accepted: boolean, reason?: SubmitResult['reason']) => void>();
   // Image admission is asynchronous; chain later submissions behind it so a
   // prompt typed after an image never reaches the agent first.
@@ -121,12 +184,25 @@ export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel,
   }));
   stops.push(ctx.on('agent/assistant-stream', ({ agent: subject, frame }) => {
     if (subject !== agent) return;
-    if (frame.type === 'start') view.startStream();
-    if (frame.type === 'end' && frame.outcome.kind === 'abandoned') view.abandon();
-    if (frame.type === 'chunk') {
-      if (frame.chunk.type === 'text-delta') view.delta('assistant', frame.chunk.text);
-      if (frame.chunk.type === 'reasoning-delta') view.delta('reasoning', frame.chunk.text);
+    if (frame.type === 'start') {
+      // A replacement Agent restarts revisions at 1; this connect() is bound
+      // to one Agent, so the local fence is enough.
+      if (frame.revision <= lastStreamRevision) return;
+      lastStreamRevision = frame.revision;
+      activeAttempt = String(frame.attemptId);
+      view.startStream(frame.turn, frame.step);
+      return;
     }
+    if (activeAttempt === undefined || String(frame.attemptId) !== activeAttempt) return;
+    if (frame.revision <= lastStreamRevision) return;
+    lastStreamRevision = frame.revision;
+    if (frame.type === 'end') {
+      activeAttempt = undefined;
+      if (frame.outcome.kind === 'abandoned') view.abandon();
+      return;
+    }
+    if (frame.chunk.type === 'text-delta') view.delta('assistant', frame.chunk.text);
+    if (frame.chunk.type === 'reasoning-delta') view.delta('reasoning', frame.chunk.text);
   }));
   stops.push(ctx.on('session/event', (session, event) => {
     if (!agent || session !== agent.session) return;
@@ -138,6 +214,17 @@ export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel,
     const message = errorText(error);
     noteError(projection, message);
     view.add('error', message);
+  }));
+  // A queued prompt can be claimed by a turn or discarded without ever
+  // becoming a `user/message` (for example when the step is rejected). Retire
+  // its chip from both events so the queue count cannot stick.
+  stops.push(ctx.on('agent/inbox/claimed', ({ agent: subject, message }) => {
+    if (subject !== agent) return;
+    view.dequeue(String(message.id));
+  }));
+  stops.push(ctx.on('agent/inbox/discarded', ({ agent: subject, message }) => {
+    if (subject !== agent) return;
+    view.dequeue(String(message.id));
   }));
 
   // This UI claims only its own Agent's approval requests. Returning next()
@@ -294,49 +381,103 @@ export function connect(ctx: Context, agent: Agent | undefined, view: ViewModel,
       }
     },
     cancel() {
-      generation++; delivery = undefined;
+      generation++; delivery = undefined; activeAttempt = undefined;
       for (const finish of admissions) finish(false, 'cancelled');
       agent?.cancel({ kind: 'user' }); view.cancelApprovals('cancelled'); view.queued = []; view.changed();
     },
     quit,
     dispose() {
-      disposed = true; generation++; delivery = undefined;
+      disposed = true; generation++; delivery = undefined; activeAttempt = undefined;
       for (const finish of admissions) finish(false, 'cancelled');
       for (const stop of stops.splice(0)) stop(); view.cancelApprovals('cancelled');
     },
   };
 }
 
-/** Replay durable facts into the local view without re-emitting Harness events. */
-export function projectSessionEvent(view: ViewModel, event: SessionEvent, state?: ProjectionState): void {
+/** Durable identity carried by one session event, when the payload has it. */
+function eventIdentity(event: SessionEvent): MessageIdentity {
+  const data = event.data as { turn?: unknown; step?: unknown };
+  return {
+    seq: Number(event.seq),
+    ...(typeof data.turn === 'number' ? { turn: data.turn } : {}),
+    ...(typeof data.step === 'number' ? { step: data.step } : {}),
+  };
+}
+
+/**
+ * Replay durable facts into the local view without re-emitting Harness events.
+ * A supplied `state` makes repeated deliveries idempotent; omitting it keeps
+ * the historical replay behavior used by callers that only project once.
+ */
+export function projectSessionEvent(view: ViewModel, event: SessionEvent, state?: ProjectionState,
+  replay = state === undefined): void {
+  const identity = eventIdentity(event);
+  if (event.type === 'assistant/message') {
+    const key = `${event.seq}:${event.data.turn}:${event.data.step}`;
+    if (state?.handledAssistant.has(key)) return;
+    state?.handledAssistant.add(key);
+  }
   view.tokens.apply(event);
   switch (event.type) {
-    case 'user/message':
-      // Keep injected instructions and runtime snapshots in Harness history, out of the
-      // transcript for both live events and session replay.
-      if (isInternalContext(event.data.source)) break;
-      view.userMessage(event.data.id, messageText(event.data.content));
+    case 'user/message': {
+      const id = String(event.data.id);
+      if (state?.handledUsers.has(id)) break;
+      state?.handledUsers.add(id);
+      const source = sourceView(event.data.source);
+      const text = messageText(event.data.content);
+      switch (classifySource(source)) {
+        case 'internal':
+          break;
+        case 'compact':
+          view.add('system', 'Context compacted.');
+          if (text) view.add('compact', text, identity);
+          break;
+        case 'notice': {
+          const summary = typeof source.summary === 'string' ? source.summary : '';
+          if (summary || text) view.add('system', summary || text, {
+            ...identity,
+            ...(typeof source.kind === 'string' ? { label: source.kind } : {}),
+          });
+          break;
+        }
+        case 'user':
+          if (text) view.userMessage(id, text, identity);
+          break;
+      }
       break;
+    }
     case 'assistant/message': {
       const content = event.data.message.content;
       const text = content.filter(block => block.type === 'text').map(block => block.text).join('\n');
       const reasoning = content.filter(block => block.type === 'reasoning').map(block => block.text).join('\n');
-      // Replay has no live rows; a live message normally already streamed its
-      // reasoning, but reconstruct it if that stream was unavailable.
-      if (reasoning && (!state || !view.hasLive('reasoning'))) view.add('reasoning', reasoning);
-      view.commit(text);
-      if (!state && event.data.interrupted && (text || reasoning)) view.add('system', 'Assistant response was interrupted before completion.');
+      // `commit` corrects a streamed reasoning row, or inserts one before the
+      // answer when the provider never streamed reasoning at all.
+      view.commit(text, reasoning, identity);
+      if (replay && event.data.interrupted && (text || reasoning)) {
+        view.add('system', 'Assistant response was interrupted before completion.');
+      }
       break;
     }
-    case 'tool/call': view.toolCall(event.data.callId, event.data.name, event.data.arguments, event.time); break;
+    case 'tool/call': {
+      const callId = String(event.data.callId);
+      if (state?.toolCards.has(callId)) break;
+      const row = view.toolCall(callId, event.data.name, event.data.arguments, event.time, identity);
+      state?.toolCards.set(callId, row);
+      break;
+    }
     case 'tool/result': {
+      const callId = String(event.data.message.toolCallId);
+      if (state?.handledToolResults.has(callId)) break;
+      state?.handledToolResults.add(callId);
+      state?.toolCards.delete(callId);
       const content = event.data.message.content.map(block => block.type === 'text' ? block.text : `[${block.type}]`).join('\n');
-      view.toolResult(event.data.message.toolCallId,
+      view.toolResult(callId,
         content || event.data.error?.reason || '',
-        !!event.data.error || !!event.data.message.isError, event.data.meta, event.time);
+        !!event.data.error || !!event.data.message.isError, event.data.meta, event.time, identity);
       break;
     }
     case 'turn/end':
+      state?.toolCards.clear();
       view.finishTurn();
       if (event.data.reason.kind === 'error') {
         const message = event.data.reason.error.message;

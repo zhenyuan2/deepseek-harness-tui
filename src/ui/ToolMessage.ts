@@ -60,7 +60,7 @@ export function toolSummary(argumentsText: string): string {
 }
 
 export function toolFamily(row: Row): 'Read' | 'Search' | undefined {
-  if (!row.tool || row.tool.status !== 'done' || row.expanded || row.tool.diffs?.length) return undefined;
+  if (!row.tool || row.lateResult || row.tool.status !== 'done' || row.expanded || row.tool.diffs?.length) return undefined;
   if (/^(?:read|read_file)$/i.test(row.tool.name)) return 'Read';
   if (/^(?:grep|glob|search|search_files|find_files)$/i.test(row.tool.name)) return 'Search';
   return undefined;
@@ -75,7 +75,8 @@ export function ToolMessage(row: Row, columns: number, theme: Theme, expanded: b
   const symbol = state === 'running' ? '◐' : state === 'failed' ? '✗' : state === 'cancelled' ? '■' : '●';
   const elapsed = tool?.endedAt ? ` · ${((tool.endedAt - tool.startedAt) / 1000).toFixed(1)}s` : '';
   const target = tool ? toolSummary(tool.arguments).replace(/\n/g, ' ') : '';
-  const result = [truncate(`  ${theme.paint(tone, symbol)} ${theme.paint('bold', plain(tool?.name ?? 'Tool'))}${target ? `(${theme.paint('muted', target)})` : ''}`, columns)];
+  const late = row.lateResult ? ` ${theme.paint('warning', '· late result')}` : '';
+  const result = [truncate(`  ${theme.paint(tone, symbol)} ${theme.paint('bold', plain(tool?.name ?? 'Tool'))}${late}${target ? `${late ? ' ' : ''}(${theme.paint('muted', target)})` : ''}`, columns)];
   const append = (text: string, error = false): void => {
     result.push(...wrap(text, Math.max(1, columns - 6)).map(line => `    ${theme.paint(error ? 'error' : 'muted', line)}`));
   };
@@ -84,6 +85,7 @@ export function ToolMessage(row: Row, columns: number, theme: Theme, expanded: b
   if (family && !full) {
     const count = countOutputLines(rawOutput);
     append(`⎿ ${count} ${family === 'Read' ? 'lines' : 'result lines'}${elapsed} · /details ${row.id}`);
+    if (row.folded) append('… folded to keep memory bounded');
     return [...result, ''];
   }
   append(`⎿ ${state}${elapsed} · #${row.id}`);
@@ -119,5 +121,6 @@ export function ToolMessage(row: Row, columns: number, theme: Theme, expanded: b
     }
     if (shown.length < preview.lines.length) append(`… more changes · /details ${row.id}`);
   }
+  if (row.folded) append('… folded to keep memory bounded');
   return [...result, ''];
 }
