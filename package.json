@@ -1,6 +1,6 @@
 {
   "name": "@nickyuan/deepseek-harness-tui",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "A terminal UI for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
