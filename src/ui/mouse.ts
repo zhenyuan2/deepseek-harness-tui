@@ -3,7 +3,8 @@ export interface MouseReport { button: number; column: number; row: number; rele
 
 /** Filter SGR mouse reports before readline; pasted reports remain literal text. */
 export function mouseInput(forward: (text: string) => void, wheel: (direction: number) => void,
-  pointer?: (report: MouseReport) => void, response?: (sequence: string) => void): { write(chunk: string | Buffer): void; close(): void } {
+  pointer?: (report: MouseReport) => void, response?: (sequence: string) => void,
+  focus?: () => void): { write(chunk: string | Buffer): void; close(): void } {
   const decoder = new StringDecoder('utf8');
   let buffer = ''; let pasting = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -14,6 +15,12 @@ export function mouseInput(forward: (text: string) => void, wheel: (direction: n
       const escape = buffer.indexOf('\x1b');
       if (escape === -1) { forward(buffer); buffer = ''; break; }
       if (escape > 0) { forward(buffer.slice(0, escape)); buffer = buffer.slice(escape); }
+      const focusReport = buffer.match(/^\x1b\[([IO])/);
+      if (focusReport) {
+        if (pasting) forward(focusReport[0]);
+        else if (focusReport[1] === 'I') focus?.();
+        buffer = buffer.slice(focusReport[0].length); continue;
+      }
       const reply = response && buffer.match(/^(?:\x1b_G[^\x1b]*\x1b\\|\x1b\[\?[\d;]*c|\x1b\[6;\d+;\d+t|\x1b\[\?80;[0-4]\$y)/);
       if (reply) {
         if (pasting) forward(reply[0]); else response?.(reply[0]);

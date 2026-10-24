@@ -136,7 +136,17 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   let capabilities = graphicsCapabilities.get(output);
   if (!capabilities) { capabilities = {}; graphicsCapabilities.set(output, capabilities); }
   const graphics = new TerminalGraphics(write, schedule, undefined, undefined, capabilities);
-  const onResize = (): void => { graphics.resize(); schedule(); };
+  const recoverScreen = (): void => {
+    if (closed) return;
+    // VS Code can recreate its display while hidden, or coalesce a resize
+    // round trip back to the original dimensions. Cached rows/images are then
+    // insufficient: repaint even when the model and final size are unchanged.
+    graphics.resetScreen(columns(), rows());
+    renderer.invalidate();
+    selection.clear(); scrollbar.cancel(); stopDragScroll();
+    schedule();
+  };
+  const onResize = (): void => { recoverScreen(); graphics.resize(); };
 
   const stopDragScroll = (): void => {
     if (dragTick !== undefined) { clearInterval(dragTick); dragTick = undefined; }
@@ -214,7 +224,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     renderer.render([], scrollbar.overlay(selection.overlay(), theme), output.columns || 80, rows(), editor.contentRows, editor.caret);
     graphics.paint(placement);
     if (text) copy(text);
-  }, response => graphics.response(response));
+  }, response => graphics.response(response), recoverScreen);
   const onData = (chunk: Buffer | string): void => mouse.write(chunk);
 
   // Last-resort terminal restoration for signals and uncaught failures. The
@@ -223,7 +233,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   const restoreTerminalSync = (): void => {
     try { graphics.dispose(columns(), rows()); } catch { /* best effort */ }
     try { if (rawTouched) input.setRawMode(wasRaw); } catch { /* stream may be gone */ }
-    const sequence = '\x1b[?1049l\x1b[r\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l';
+    const sequence = '\x1b[?1049l\x1b[r\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l';
     try {
       const fd = (output as { fd?: number }).fd;
       if (typeof fd === 'number' && fd >= 0) {
@@ -317,7 +327,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       try { if (pasteEnabled) write('\x1b[?2004l'); } catch { /* best effort */ }
       // Resetting margins also homes the cursor. Preserve the cursor after the
       // published tail on success so a replacement TUI cannot overwrite it.
-      try { write((renderedClose ? '' : '\x1b[?1049l\x1b[r') + '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l'); } catch { /* best effort */ }
+      try { write((renderedClose ? '' : '\x1b[?1049l\x1b[r') + '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l'); } catch { /* best effort */ }
       try { write('\x1b[?25h\x1b[0m'); } catch { /* best effort */ }
       try { if (rawTouched) input.setRawMode(wasRaw); } catch { /* stream may be gone */ }
       try { if (resumed && !wasFlowing) input.pause(); } catch { /* stream may be gone */ }
@@ -349,7 +359,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     resumed = true; input.resume();
     // Button-event tracking reports dragging as well as wheel events.
     pasteEnabled = true;
-    write('\x1b[?2004h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
+    write('\x1b[?2004h\x1b[?1004h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l');
     if (mouseTracking) write('\x1b[?1002h\x1b[?1006h');
     input.on('keypress', onKey); listening = true;
     keys.on('keypress', onKey); input.on('data', onData);
