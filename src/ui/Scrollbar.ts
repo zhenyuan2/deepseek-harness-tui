@@ -1,6 +1,5 @@
 import type { MouseReport } from './mouse.js';
 import type { Theme } from './theme.js';
-import { cellWidth } from './text.js';
 
 interface Track {
   column: number;
@@ -35,7 +34,10 @@ export class Scrollbar {
     return frame.map((line, row) => {
       if (row >= track.height) return line;
       const thumb = row >= track.offset && row < track.offset + track.size;
-      return line + '\x1b[0m' + ' '.repeat(Math.max(0, track.column - cellWidth(line))) +
+      // Terminals can disagree with our Unicode cell widths. Anchor the chrome
+      // to its absolute screen cell; a cursor-relative move would land on the
+      // wrong row if the text had already wrapped.
+      return line + `\x1b[0m\x1b[${row + 1};${track.column + 1}H` +
         theme.paint(thumb ? 'accent' : 'border', thumb ? '█' : '│');
     });
   }
