@@ -78,8 +78,8 @@ export function apply(ctx: Context, config: Config): void {
       if (abort.signal.aborted) return;
       const terminal = close; close = undefined;
       try { terminal?.(); } catch { /* terminal restoration is best effort */ }
-      try { await terminal?.flush(); } catch { /* terminal restoration is best effort */ }
       console.error('simple-tui:', error instanceof Error ? error.message : String(error));
+      try { await terminal?.flush(); } catch { /* terminal restoration is best effort */ }
       exit(1);
     });
     return async () => {

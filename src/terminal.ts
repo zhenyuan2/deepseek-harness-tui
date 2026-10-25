@@ -33,8 +33,12 @@ export interface Actions {
 }
 export interface TerminalClose {
   (): void;
-  /** Resolve after the output queued by close() has reached the terminal. */
-  flush(): Promise<void>;
+  /**
+   * Resolve after the output queued by close() has reached the terminal.
+   * Gives up after `timeoutMs` without drain progress so a stalled terminal
+   * cannot hang shutdown forever.
+   */
+  flush(timeoutMs?: number): Promise<void>;
 }
 // Conversation mounts share terminal support, but never reuse deleted image IDs.
 const graphicsCapabilities = new WeakMap<object, GraphicsCapabilities>();
@@ -89,15 +93,32 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const columns = (): number => Math.max(1, (output.columns || 80) - 1);
   const rows = (): number => Math.max(1, output.rows || 24);
-  const flushOutput = (): Promise<void> => new Promise(resolve => {
+  const flushOutput = (timeoutMs = 2_000): Promise<void> => new Promise(resolve => {
     if (output.destroyed || output.writableFinished) { resolve(); return; }
+    const idle = Math.max(10, timeoutMs);
     let settled = false;
+    let lastLength = output.writableLength;
+    let lastProgress = Date.now();
+    let watchdog: ReturnType<typeof setInterval> | undefined;
     const finish = (): void => {
       if (settled) return;
       settled = true;
+      if (watchdog !== undefined) clearInterval(watchdog);
       output.off('error', finish); output.off('close', finish);
       resolve();
     };
+    // Wait while the terminal is making progress; only give up after the
+    // write queue has stopped shrinking, not after a fixed total duration.
+    watchdog = setInterval(() => {
+      const length = output.writableLength;
+      if (length < lastLength) { lastLength = length; lastProgress = Date.now(); return; }
+      if (Date.now() - lastProgress < idle) return;
+      // A terminal that has stopped reading cannot accept the trailing reset
+      // sequences. Restore blocking for any replacement and let shutdown exit;
+      // keeping the process alive here leaves the UI unresponsive forever.
+      try { releaseOutput?.block(); } catch { /* best effort */ }
+      finish();
+    }, Math.max(10, Math.min(250, Math.floor(idle / 4))));
     output.once('error', finish); output.once('close', finish);
     try { output.write('', finish); } catch { finish(); }
   });
