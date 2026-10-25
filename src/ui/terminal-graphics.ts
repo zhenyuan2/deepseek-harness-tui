@@ -39,6 +39,10 @@ export class TerminalGraphics {
   start(): void {
     const forced = this.override === 'kitty' || this.override === 'sixel';
     if (this.override === 'none' || (!forced && process.env.TERM === 'dumb') || process.env.TMUX || process.env.STY) return;
+    // VS Code's image display can stall across hidden-terminal resize/replay,
+    // even while the application's nonblocking event loop remains responsive.
+    // Keep its default welcome on the text renderer; native protocols are opt-in.
+    if (!forced && process.env.TERM_PROGRAM === 'vscode') return;
     if (this.capabilities.cell) { this.cell = { ...this.capabilities.cell }; this.measuredCell = true; }
     this.displayMode = this.capabilities.displayMode ?? 0;
     if (!forced && this.capabilities.protocol) void this.activate(this.capabilities.protocol);
