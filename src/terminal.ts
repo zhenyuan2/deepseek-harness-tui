@@ -85,7 +85,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   let rawTouched = false; let resumed = false; let pasteEnabled = false; let listening = false;
   let guards = false; let finishing = false;
   let releaseOutput: OutputLease | undefined;
-  let waitingForDrain = false; let recoveryPending = false;
+  let waitingForDrain = false; let recoveryPending = false; let resizePending = false;
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const columns = (): number => Math.max(1, (output.columns || 80) - 1);
   const rows = (): number => Math.max(1, output.rows || 24);
@@ -122,7 +122,11 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       if (recoveryPending) {
         recoveryPending = false;
         graphics.resetScreen(columns(), rows());
-        graphics.resize(); renderer.invalidate();
+        renderer.invalidate();
+      }
+      if (resizePending) {
+        resizePending = false;
+        graphics.resize();
       }
       consumeScreenClear();
       if (view.approval !== lastApproval) { editor.approvalPage = 0; editor.approvalSelection = 0; lastApproval = view.approval; }
@@ -185,17 +189,17 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   let capabilities = graphicsCapabilities.get(output);
   if (!capabilities) { capabilities = {}; graphicsCapabilities.set(output, capabilities); }
   const graphics = new TerminalGraphics(write, schedule, undefined, undefined, capabilities);
-  const recoverScreen = (): void => {
+  const recoverScreen = (measure = false): void => {
     if (closed) return;
     // VS Code can recreate its display while hidden, or coalesce a resize
     // round trip back to the original dimensions. Cached rows/images are then
     // insufficient: repaint even when the model and final size are unchanged.
-    graphics.resetScreen(columns(), rows());
-    renderer.invalidate();
+    recoveryPending = true;
+    if (measure) resizePending = true;
     selection.clear(); scrollbar.cancel(); stopDragScroll();
     schedule();
   };
-  const onResize = (): void => { recoverScreen(); graphics.resize(); };
+  const onResize = (): void => recoverScreen(true);
   const onDrain = (): void => { if (waitingForDrain) schedule(); };
 
   const stopDragScroll = (): void => {
