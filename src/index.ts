@@ -5,7 +5,7 @@ import z from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-agent-default-model';
 import type {} from '@deepseek-ai/dsh-cmdline';
 import type {} from '@deepseek-ai/cordis-plugin-loader';
-import { openTerminal } from './terminal.js';
+import { openTerminal, type TerminalClose } from './terminal.js';
 import { TuiRuntime, type DeepSeekProvider } from './runtime.js';
 
 /** Cordis identifies the plugin independently of its npm package name. */
@@ -50,12 +50,16 @@ export function apply(ctx: Context, config: Config): void {
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('simple-tui requires an interactive terminal.');
   ctx.effect(() => {
     const abort = new AbortController();
-    let close: (() => void) | undefined;
+    let close: TerminalClose | undefined;
     let exiting = false;
-    const quit = (): void => {
+    const quit = async (): Promise<void> => {
       if (exiting) return;
       exiting = true;
-      try { close?.(); } finally { runtime.abort(); exit(0); }
+      const terminal = close; close = undefined;
+      try { terminal?.(); } catch { /* terminal restoration is best effort */ }
+      try { runtime.abort(); } catch { /* runtime may already be disposed */ }
+      try { await terminal?.flush(); } catch { /* terminal restoration is best effort */ }
+      exit(0);
     };
     const settingsHome = process.env.DSH_HOME || join(process.cwd(), '.dsh-home');
     const runtime = new TuiRuntime(ctx, { ...config, statuslinePath: join(settingsHome, 'simple-tui-statusline.json'),
@@ -70,16 +74,19 @@ export function apply(ctx: Context, config: Config): void {
       ]);
       if (abort.signal.aborted) return;
       await runtime.start(process.env.DSH_TUI_RESUME_SESSION || config.resumeSessionId || undefined);
-    })().catch((error: unknown) => {
+    })().catch(async (error: unknown) => {
       if (abort.signal.aborted) return;
-      close?.();
+      const terminal = close; close = undefined;
+      try { terminal?.(); } catch { /* terminal restoration is best effort */ }
+      try { await terminal?.flush(); } catch { /* terminal restoration is best effort */ }
       console.error('simple-tui:', error instanceof Error ? error.message : String(error));
       exit(1);
     });
     return async () => {
       abort.abort(); runtime.abort();
-      try { close?.(); }
-      finally { await startup; await runtime.dispose(); }
+      const terminal = close; close = undefined;
+      try { terminal?.(); } catch { /* terminal restoration is best effort */ }
+      try { await terminal?.flush(); } finally { await startup; await runtime.dispose(); }
     };
   });
 }

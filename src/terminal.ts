@@ -10,12 +10,13 @@ import { createInputHandler, type Key } from './ui/input.js';
 import { Messages } from './ui/Conversation.js';
 import { ScrollbackRenderer } from './ui/scrollback.js';
 import { Transcript } from './ui/transcript.js';
-import { mouseInput } from './ui/mouse.js';
+import { mouseInput, type MouseReport } from './ui/mouse.js';
 import { TextSelection } from './ui/selection.js';
 import { Scrollbar } from './ui/Scrollbar.js';
 import { copyText } from './ui/clipboard.js';
 import { readClipboardImage as readSystemClipboard, type ImageLimits, type PendingImage } from './ui/clipboard-image.js';
 import { TerminalGraphics, type GraphicsCapabilities } from './ui/terminal-graphics.js';
+import { useNonBlockingOutput, type OutputLease } from './ui/terminal-output.js';
 import { movePicker } from './ui/Picker.js';
 import { createTheme } from './ui/theme.js';
 import { plain, truncate } from './ui/text.js';
@@ -30,13 +31,40 @@ export interface Actions {
   cancel(): void;
   quit(): void;
 }
+export interface TerminalClose {
+  (): void;
+  /** Resolve after the output queued by close() has reached the terminal. */
+  flush(): Promise<void>;
+}
 // Conversation mounts share terminal support, but never reuse deleted image IDs.
 const graphicsCapabilities = new WeakMap<object, GraphicsCapabilities>();
+const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+/** A blocking fd may still report EAGAIN transiently; retry partial writes for shutdown. */
+function writeAllSync(fd: number, text: string): boolean {
+  const data = Buffer.from(text);
+  let offset = 0;
+  let retries = 0;
+  while (offset < data.length) {
+    try {
+      const written = writeSync(fd, data, offset, data.length - offset);
+      if (written <= 0) return false;
+      offset += written;
+      retries = 0;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EAGAIN' && code !== 'EWOULDBLOCK' && code !== 'EINTR') return false;
+      if (++retries > 200) return false;
+      Atomics.wait(waitBuffer, 0, 0, 5);
+    }
+  }
+  return true;
+}
 
 export function openTerminal(view: ViewModel, actions: Actions, title: string,
   ports = { input: process.stdin, output: process.stdout },
   options: { mouseTracking?: boolean; exit?: (code: number) => void; copy?: (text: string) => void;
-    readClipboardImage?: () => Promise<PendingImage | undefined> } = {}): () => void {
+    readClipboardImage?: () => Promise<PendingImage | undefined> } = {}): TerminalClose {
   const { input, output } = ports;
   const mouseTracking = options.mouseTracking ?? true;
   if (!input.isTTY || !output.isTTY) throw new Error('DeepSeek Harness TUI requires an interactive terminal (stdin and stdout TTY).');
@@ -56,9 +84,23 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   let unsubscribe: (() => void) | undefined;
   let rawTouched = false; let resumed = false; let pasteEnabled = false; let listening = false;
   let guards = false; let finishing = false;
+  let releaseOutput: OutputLease | undefined;
+  let waitingForDrain = false; let recoveryPending = false;
   const exit = options.exit ?? ((code: number) => process.exit(code));
   const columns = (): number => Math.max(1, (output.columns || 80) - 1);
   const rows = (): number => Math.max(1, output.rows || 24);
+  const flushOutput = (): Promise<void> => new Promise(resolve => {
+    if (output.destroyed || output.writableFinished) { resolve(); return; }
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      output.off('error', finish); output.off('close', finish);
+      resolve();
+    };
+    output.once('error', finish); output.once('close', finish);
+    try { output.write('', finish); } catch { finish(); }
+  });
   const restoreWrites: (() => void)[] = [];
   let header = true;
   let lastApproval = view.approval;
@@ -74,7 +116,14 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   const redraw = (): void => {
     timer = undefined;
     if (closed) return;
+    if (output.writableNeedDrain) { waitingForDrain = true; return; }
+    waitingForDrain = false;
     try {
+      if (recoveryPending) {
+        recoveryPending = false;
+        graphics.resetScreen(columns(), rows());
+        graphics.resize(); renderer.invalidate();
+      }
       consumeScreenClear();
       if (view.approval !== lastApproval) { editor.approvalPage = 0; editor.approvalSelection = 0; lastApproval = view.approval; }
       if (header) { transcript.append(Header(title, view.model, view.cwd || process.cwd(), columns(), theme)); header = false; }
@@ -147,6 +196,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     schedule();
   };
   const onResize = (): void => { recoverScreen(); graphics.resize(); };
+  const onDrain = (): void => { if (waitingForDrain) schedule(); };
 
   const stopDragScroll = (): void => {
     if (dragTick !== undefined) { clearInterval(dragTick); dragTick = undefined; }
@@ -193,6 +243,26 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     stopDragScroll();
     handleKey(text, key);
   };
+  const seekPreview = (start: number, last: number): void => {
+    editor.previewStart = (view.showWelcome ? start === 0 : start >= last) ? undefined : start;
+  };
+  const handleMouseReport = (report: MouseReport, repaint: boolean): void => {
+    if (scrollbar.pointer(report, seekPreview)) {
+      selection.clear(); stopDragScroll();
+      if (repaint) redraw(); else schedule();
+      return;
+    }
+    const text = selection.pointer(report);
+    if (selection.reviewing && transcript.selectionViewport) editor.previewStart = transcript.selectionViewport.start;
+    syncDragScroll();
+    if (repaint) {
+      const placement = selection.active ? undefined : graphics.view?.placement;
+      if (graphics.prepare(placement, columns(), rows())) renderer.invalidate();
+      renderer.render([], scrollbar.overlay(selection.overlay(), theme), output.columns || 80, rows(), editor.contentRows, editor.caret);
+      graphics.paint(placement);
+    } else schedule();
+    if (text) copy(text);
+  };
   const mouse = mouseInput(text => { keys.write(text); }, direction => {
     if (!mouseTracking) return;
     scrollbar.cancel();
@@ -209,21 +279,16 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     schedule();
   }, report => {
     if (!mouseTracking || closed) return;
+    if (output.writableNeedDrain) {
+      waitingForDrain = true;
+      // Coalesce frames without dropping gesture state: a release still has
+      // to clear selection and scrollbar drags while the terminal is blocked.
+      handleMouseReport(report, false);
+      return;
+    }
     // Incorporate queued changes before interpreting coordinates or committing a copy.
     if (timer !== undefined) { clearTimeout(timer); redraw(); }
-    if (scrollbar.pointer(report, (start, last) => {
-      editor.previewStart = (view.showWelcome ? start === 0 : start >= last) ? undefined : start;
-    })) {
-      selection.clear(); stopDragScroll(); redraw(); return;
-    }
-    const text = selection.pointer(report);
-    if (selection.reviewing && transcript.selectionViewport) editor.previewStart = transcript.selectionViewport.start;
-    syncDragScroll();
-    const placement = selection.active ? undefined : graphics.view?.placement;
-    if (graphics.prepare(placement, columns(), rows())) renderer.invalidate();
-    renderer.render([], scrollbar.overlay(selection.overlay(), theme), output.columns || 80, rows(), editor.contentRows, editor.caret);
-    graphics.paint(placement);
-    if (text) copy(text);
+    handleMouseReport(report, true);
   }, response => graphics.response(response), recoverScreen);
   const onData = (chunk: Buffer | string): void => mouse.write(chunk);
 
@@ -231,14 +296,14 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   // normal close() can be skipped when Node exits, so this path uses a
   // synchronous write and resets raw mode without waiting for stream flushes.
   const restoreTerminalSync = (): void => {
+    // writeSync cannot guarantee a full write while fd 1 is still O_NONBLOCK.
+    try { releaseOutput?.block(); } catch { /* best effort */ }
     try { graphics.dispose(columns(), rows()); } catch { /* best effort */ }
     try { if (rawTouched) input.setRawMode(wasRaw); } catch { /* stream may be gone */ }
     const sequence = '\x1b[?1049l\x1b[r\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l';
     try {
       const fd = (output as { fd?: number }).fd;
-      if (typeof fd === 'number' && fd >= 0) {
-        try { writeSync(fd, sequence); return; } catch { /* fall back to the stream */ }
-      }
+      if (typeof fd === 'number' && fd >= 0 && writeAllSync(fd, sequence)) return;
       output.write(sequence);
     } catch { /* best effort during shutdown */ }
   };
@@ -251,9 +316,10 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     if (error !== undefined) {
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
       const message = `\nDeepSeek Harness TUI: ${detail}\n`;
-      // close() restores the console patch first, but use a synchronous write
-      // so the diagnostic is not lost when process.exit follows immediately.
-      try { writeSync(2, message); } catch { try { process.stderr.write(message); } catch { /* stderr may be gone */ } }
+      // close() restores the console patch first, but use a blocking write so
+      // the diagnostic is not lost when process.exit follows immediately.
+      try { if (!writeAllSync(2, message)) process.stderr.write(message); }
+      catch { try { process.stderr.write(message); } catch { /* stderr may be gone */ } }
     }
     try { exit(code); } catch { /* the process may already be exiting */ } finally { removeGuards(); }
   };
@@ -289,6 +355,9 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   const close = (emergency = false): void => {
     if (closed) return;
     closed = true;
+    // Fatal shutdown needs synchronous writes; keep interactive writes
+    // nonblocking only while the UI is live.
+    if (emergency) { try { releaseOutput?.block(); } catch { /* best effort */ } }
     editor.cancelImageReads();
     if (timer !== undefined) clearTimeout(timer);
     if (tick !== undefined) clearInterval(tick);
@@ -299,6 +368,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       try { input.off('data', onData); } catch { /* stream may be gone */ }
       try { keys.off('keypress', onKey); } catch { /* stream may be gone */ }
       try { output.off('resize', onResize); } catch { /* stream may be gone */ }
+      try { output.off('drain', onDrain); } catch { /* stream may be gone */ }
     }
     try { mouse.close(); } catch { /* timer may already be gone */ }
     try { graphics.dispose(columns(), rows()); } catch { /* terminal may be gone */ }
@@ -331,6 +401,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       try { write('\x1b[?25h\x1b[0m'); } catch { /* best effort */ }
       try { if (rawTouched) input.setRawMode(wasRaw); } catch { /* stream may be gone */ }
       try { if (resumed && !wasFlowing) input.pause(); } catch { /* stream may be gone */ }
+      try { releaseOutput?.(); } catch { /* output may be gone */ }
       // Keep signal handlers until the terminal is actually restored, so an
       // exception inside close() still leaves the exit fallback installed.
       // During a fatal signal finish() removes them after exit, otherwise Node
@@ -340,6 +411,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   };
 
   try {
+    releaseOutput = useNonBlockingOutput(output);
     installGuards();
     // Route plugin diagnostics through the transcript, never through the active editor.
     if (output === process.stdout) for (const stream of [process.stdout, process.stderr]) {
@@ -364,6 +436,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     input.on('keypress', onKey); listening = true;
     keys.on('keypress', onKey); input.on('data', onData);
     output.on('resize', onResize);
+    output.on('drain', onDrain);
     unsubscribe = view.subscribe(schedule);
     tick = setInterval(() => {
       if ((view.status === 'running' || view.pendingAdmissions || editor.clipboardRead || editor.droppedRead) && !view.approval) schedule();
@@ -371,7 +444,9 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     tick.unref();
     redraw();
     if (view.showWelcome) graphics.start();
-    return close;
+    const terminalClose = close as TerminalClose;
+    terminalClose.flush = flushOutput;
+    return terminalClose;
   } catch (error: unknown) {
     // openTerminal performs terminal side effects before the first render.
     // Undo them here so the caller's startup catch can report the real error
