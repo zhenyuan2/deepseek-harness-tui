@@ -43,6 +43,8 @@ export interface TerminalClose {
 // Conversation mounts share terminal support, but never reuse deleted image IDs.
 const graphicsCapabilities = new WeakMap<object, GraphicsCapabilities>();
 const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+const RESET_SEQUENCE = '\x1b[?1049l\x1b[r\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l';
+const WRITE_CHARS = 8 * 1024;
 
 /** A blocking fd may still report EAGAIN transiently; retry partial writes for shutdown. */
 function writeAllSync(fd: number, text: string): boolean {
@@ -72,7 +74,22 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
   const { input, output } = ports;
   const mouseTracking = options.mouseTracking ?? true;
   if (!input.isTTY || !output.isTTY) throw new Error('DeepSeek Harness TUI requires an interactive terminal (stdin and stdout TTY).');
-  const write = output.write.bind(output);
+  const streamWrite = output.write.bind(output);
+  // Keep each write small enough that a stalled flush can observe progress
+  // between chunks; terminal escape sequences may safely span writes.
+  const write = (text: string): boolean => {
+    let offset = 0;
+    while (offset < text.length) {
+      let end = Math.min(text.length, offset + WRITE_CHARS);
+      if (end < text.length) {
+        const code = text.charCodeAt(end - 1);
+        if (code >= 0xD800 && code <= 0xDBFF) end--;
+      }
+      streamWrite(text.slice(offset, end));
+      offset = end;
+    }
+    return true;
+  };
   const copy = options.copy ?? ((text: string) => copyText(text, write));
   const renderer = new ScrollbackRenderer(write);
   const theme = createTheme(); const editor = new Editor(() => actions.imageLimits?.(), () => schedule());
@@ -114,8 +131,16 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
       if (length < lastLength) { lastLength = length; lastProgress = Date.now(); return; }
       if (Date.now() - lastProgress < idle) return;
       // A terminal that has stopped reading cannot accept the trailing reset
-      // sequences. Restore blocking for any replacement and let shutdown exit;
-      // keeping the process alive here leaves the UI unresponsive forever.
+      // sequences. While the fd is still nonblocking, make one last best-effort
+      // reset that cannot block; then restore blocking for any replacement and
+      // let shutdown exit. Keeping the process alive here leaves the UI
+      // unresponsive forever.
+      if (releaseOutput?.nonblocking) {
+        try {
+          const fd = (output as { fd?: number }).fd;
+          if (typeof fd === 'number' && fd >= 0) writeSync(fd, RESET_SEQUENCE);
+        } catch { /* terminal is no longer writable */ }
+      }
       try { releaseOutput?.block(); } catch { /* best effort */ }
       finish();
     }, Math.max(10, Math.min(250, Math.floor(idle / 4))));
@@ -325,7 +350,7 @@ export function openTerminal(view: ViewModel, actions: Actions, title: string,
     try { releaseOutput?.block(); } catch { /* best effort */ }
     try { graphics.dispose(columns(), rows()); } catch { /* best effort */ }
     try { if (rawTouched) input.setRawMode(wasRaw); } catch { /* stream may be gone */ }
-    const sequence = '\x1b[?1049l\x1b[r\x1b[0m\x1b[?25h\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l';
+    const sequence = RESET_SEQUENCE;
     try {
       const fd = (output as { fd?: number }).fd;
       if (typeof fd === 'number' && fd >= 0 && writeAllSync(fd, sequence)) return;

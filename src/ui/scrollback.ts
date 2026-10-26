@@ -8,6 +8,7 @@ const MEMORY_HISTORY_LINES = 2_000;
 const MEMORY_HISTORY_CHARS = 1_000_000;
 const SPOOL_CHUNK_LINES = 256;
 const SPOOL_READ_BYTES = 64 * 1024;
+const HISTORY_WRITE_CHARS = 8 * 1024;
 
 interface HistorySpool { readonly directory: string; readonly path: string; readonly fd: number }
 
@@ -79,10 +80,9 @@ export class ScrollbackRenderer {
       if (this.mounted) this.write('\x1b[r\x1b[?1049l');
       if (this.spool) {
         this.writeSpooledHistory();
-        if (completed.length) this.write(completed.join('\r\n') + '\r\n');
+        this.writeHistory(completed);
       } else {
-        const durable = this.history.concat(completed);
-        if (durable.length) this.write(durable.join('\r\n') + '\r\n');
+        this.writeHistory(this.history.concat(completed));
       }
       this.write('\x1b[0m\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?25h');
     } finally {
@@ -154,13 +154,44 @@ export class ScrollbackRenderer {
       let bytes = 0;
       while ((bytes = readSync(fd, buffer, 0, buffer.length, null)) > 0) {
         const text = decoder.write(buffer.subarray(0, bytes));
-        if (text) this.write(text);
+        if (text) this.writeChunked(text);
       }
       const tail = decoder.end();
-      if (tail) this.write(tail);
+      if (tail) this.writeChunked(tail);
     } finally {
       closeSync(fd);
     }
+  }
+
+  /** Keep terminal writes bounded so a slow consumer still shows progress. */
+  private writeChunked(text: string): void {
+    let offset = 0;
+    while (offset < text.length) {
+      let end = Math.min(text.length, offset + HISTORY_WRITE_CHARS);
+      if (end < text.length) {
+        // Never split a UTF-16 surrogate pair across two writes.
+        const code = text.charCodeAt(end - 1);
+        if (code >= 0xD800 && code <= 0xDBFF) end--;
+      }
+      this.write(text.slice(offset, end));
+      offset = end;
+    }
+  }
+
+  private writeHistory(lines: readonly string[]): void {
+    let chunk: string[] = [];
+    let chars = 0;
+    const flush = (): void => {
+      if (!chunk.length) return;
+      this.writeChunked(chunk.join('\r\n') + '\r\n');
+      chunk = []; chars = 0;
+    };
+    for (const line of lines) {
+      chunk.push(line);
+      chars += line.length + 2;
+      if (chars >= HISTORY_WRITE_CHARS) flush();
+    }
+    flush();
   }
 
   private discardSpool(): void {
