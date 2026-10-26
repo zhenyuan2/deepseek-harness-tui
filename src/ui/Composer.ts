@@ -8,6 +8,7 @@ export interface CaretPosition { row: number; column: number }
 /** Visible placeholder for an image whose bytes are still being read. */
 export interface PendingImageSlot { readonly pending: true; readonly path: string }
 export type EditorToken = string | PendingImage | PendingImageSlot;
+interface InputSnapshot { buffer: EditorToken[]; cursor: number; pastedLines: number }
 const isPendingImageSlot = (token: EditorToken): token is PendingImageSlot =>
   typeof token !== 'string' && 'pending' in token;
 const isPendingImage = (token: EditorToken): token is PendingImage =>
@@ -24,7 +25,10 @@ export class Editor {
   /** Input history includes image tokens so unsuccessful sends can be recalled. */
   history: EditorToken[][] = [];
   historyIndex = 0;
-  private draftBuffer?: EditorToken[];
+  private draft?: InputSnapshot;
+  /** Unsaved edits belong to this browsing session, never to sent history. */
+  private historyEdits = new Map<number, InputSnapshot>();
+  private historyEditBytes = 0;
   selection = 0;
   pastedLines = 0;
   /** Images occupy one editable position, just like a text grapheme. */
@@ -69,10 +73,9 @@ export class Editor {
   contentRows = 0;
   get text(): string { return this.buffer.filter(token => typeof token === 'string').join(''); }
   get browsingHistory(): boolean {
-    const entry = this.history[this.historyIndex];
-    return entry !== undefined && entry.length === this.buffer.length && entry.every((token, index) => token === this.buffer[index]);
+    return this.historyIndex < this.history.length;
   }
-  /** A recalled multiline entry leaves history only from its first/last line. */
+  /** Ordinary multiline drafts enter history only at their line boundaries. */
   get atFirstLine(): boolean { return this.lineBoundary(false) === 0; }
   get atLastLine(): boolean { return this.lineBoundary(true) === this.buffer.length; }
   get suggestions(): typeof commands {
@@ -127,7 +130,8 @@ export class Editor {
     this.buffer = this.buffer.filter(token => typeof token === 'string');
     // Explicit clearing leaves history browsing and discards its saved draft,
     // so Down cannot resurrect images the user has already removed.
-    this.draftBuffer = undefined; this.historyIndex = this.history.length;
+    this.draft = undefined; this.historyEdits.clear(); this.historyEditBytes = 0;
+    this.historyIndex = this.history.length;
     this.cancelImageReads();
   }
   /** Preserve image positions without placing display labels in the model's text. */
@@ -197,12 +201,40 @@ export class Editor {
       this.cursor = Math.min(end, nextStart + column);
     }
   }
+  private snapshotImageBytes(snapshot: InputSnapshot): number {
+    return snapshot.buffer.reduce((sum, token) =>
+      sum + (typeof token === 'string' || isPendingImageSlot(token) ? 0 : token.data.byteLength), 0);
+  }
+  private rememberHistoryEdit(index: number, snapshot: InputSnapshot): void {
+    const previous = this.historyEdits.get(index);
+    if (previous) this.historyEditBytes -= this.snapshotImageBytes(previous);
+    this.historyEdits.set(index, snapshot);
+    const bytes = this.snapshotImageBytes(snapshot);
+    this.historyEditBytes += bytes;
+    // History edits keep image tokens alive outside the history budget. Keep
+    // the current entry and evict older snapshots until the same byte cap fits.
+    const budget = Math.max(this.imageLimits.maxMessageImageBytes, bytes);
+    for (const [key, value] of [...this.historyEdits]) {
+      if (this.historyEditBytes <= budget) break;
+      if (key === index) continue;
+      this.historyEdits.delete(key);
+      this.historyEditBytes -= this.snapshotImageBytes(value);
+    }
+  }
   recall(direction: number): void {
+    const next = Math.max(0, Math.min(this.history.length, this.historyIndex + Math.sign(direction)));
+    // At either boundary this is a true no-op, including pending image reads
+    // and the cursor position within the current draft or history entry.
+    if (next === this.historyIndex) return;
     this.cancelImageReads();
-    if (this.historyIndex === this.history.length) this.draftBuffer = this.buffer.slice();
-    this.historyIndex = Math.max(0, Math.min(this.history.length, this.historyIndex + direction));
-    this.buffer = (this.history[this.historyIndex] ?? this.draftBuffer ?? []).slice();
-    this.cursor = this.buffer.length; this.selection = 0; this.pastedLines = 0;
+    const snapshot = { buffer: this.buffer.slice(), cursor: this.cursor, pastedLines: this.pastedLines };
+    if (this.browsingHistory) this.rememberHistoryEdit(this.historyIndex, snapshot);
+    else this.draft = snapshot;
+    this.historyIndex = next;
+    const saved = this.browsingHistory ? this.historyEdits.get(next) : this.draft;
+    this.buffer = (saved?.buffer ?? this.history[next] ?? []).slice();
+    this.cursor = Math.max(0, Math.min(this.buffer.length, saved?.cursor ?? this.buffer.length));
+    this.pastedLines = saved?.pastedLines ?? 0; this.selection = 0;
   }
   /** Conversation previews are bottom-anchored; the welcome/notice viewport is top-anchored. */
   scrollPreview(direction: number, step: number, topAnchored: boolean): void {
@@ -231,7 +263,6 @@ export class Editor {
       let retained = this.history.reduce((sum, entry) => sum + bytes(entry), 0);
       const budget = Math.max(this.imageLimits.maxMessageImageBytes, bytes(this.history.at(-1)!));
       while (retained > budget && this.history.length > 1) retained -= bytes(this.history.shift()!);
-      this.draftBuffer = undefined;
       this.replace(''); this.clearAttachments();
     }
     return value;

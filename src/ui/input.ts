@@ -221,12 +221,13 @@ export function createInputHandler(view: ViewModel, editor: Editor, actions: Act
     else if (key.ctrl && key.name === 'd' && !editor.buffer.length) { actions.quit(); return; }
     else if (key.name === 'up' || key.name === 'down') {
       const direction = key.name === 'up' ? -1 : 1;
-      if (editor.suggestions.length) editor.selection = (editor.selection + direction + editor.suggestions.length) % editor.suggestions.length;
-      else if (editor.text.includes('\n') && !key.meta) {
-        // Recalled multiline input keeps normal vertical editing until the
-        // cursor reaches the matching line boundary, then enters history.
+      // Once browsing, both arrows must keep traversing entries regardless of
+      // their contents or local edits. Completion and line motion own drafts.
+      if (editor.browsingHistory || key.meta) editor.recall(direction);
+      else if (editor.suggestions.length) editor.selection = (editor.selection + direction + editor.suggestions.length) % editor.suggestions.length;
+      else if (editor.text.includes('\n')) {
         const atBoundary = direction < 0 ? editor.atFirstLine : editor.atLastLine;
-        if (editor.browsingHistory && atBoundary) editor.recall(direction);
+        if (atBoundary) editor.recall(direction);
         else editor.moveLine(direction);
       }
       else editor.recall(direction);
