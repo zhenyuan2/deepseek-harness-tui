@@ -18,7 +18,7 @@ export function Header(title: string, model: string, cwd: string, columns: numbe
 export function App(view: ViewModel, editor: Editor, columns: number, rows: number, theme: Theme, details: boolean, now: number, transcript?: Transcript, image?: WelcomeImageView): string[] {
   if (image) { image.crop = undefined; image.placement = undefined; }
   const capacity = Math.max(1, rows - 1);
-  if (columns < 16 || rows < 5) { editor.contentRows = 0; editor.caret = undefined; return [truncate(theme.paint('muted', 'Window too small · Ctrl+C exit'), columns)]; }
+  if (columns < 16 || rows < 5) { editor.contentRows = 0; editor.caret = undefined; editor.composerColumns = undefined; return [truncate(theme.paint('muted', 'Window too small · Ctrl+C exit'), columns)]; }
   const welcome = view.showWelcome;
   if (editor.welcome !== welcome) { editor.previewStart = undefined; editor.welcome = welcome; }
   const status = StatusLines(view, editor, columns, theme, now, welcome ? 1 : rows >= 10 ? 2 : 1);
@@ -36,8 +36,9 @@ export function App(view: ViewModel, editor: Editor, columns: number, rows: numb
       : Picker(view.picker, columns, capacity, theme);
   }
   const notice = editor.notice ? [truncate(`  ${theme.paint('muted', plain(editor.notice))}`, columns)] : [];
+  // Grow long drafts while retaining room for conversation and status.
   const composer = Composer(editor, columns, theme,
-    Math.min(4, Math.max(1, capacity - 3 - status.length - notice.length)));
+    Math.min(Math.max(4, Math.floor(rows / 2)), Math.max(1, capacity - 3 - status.length - notice.length)));
   const menu = CommandMenu(editor, columns, theme);
   const rule = theme.paint('border', '─'.repeat(columns));
   const statusLines = [...status];

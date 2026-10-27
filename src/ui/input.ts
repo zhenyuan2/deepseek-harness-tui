@@ -59,6 +59,7 @@ export function createInputHandler(view: ViewModel, editor: Editor, actions: Act
   };
   const handle = (text: string | undefined, key: Key = {}): void => {
     if (!isActive()) return;
+    if (key.name !== 'up' && key.name !== 'down') editor.resetVerticalMotion();
     if (replaying && (view.approval || view.picker)) { discardDeferred(); return; }
     if (!replaying && deferred && !view.approval && !view.picker) {
       // Preserve complete paste protocols so pasted control characters never
@@ -225,12 +226,8 @@ export function createInputHandler(view: ViewModel, editor: Editor, actions: Act
       // their contents or local edits. Completion and line motion own drafts.
       if (editor.browsingHistory || key.meta) editor.recall(direction);
       else if (editor.suggestions.length) editor.selection = (editor.selection + direction + editor.suggestions.length) % editor.suggestions.length;
-      else if (editor.text.includes('\n')) {
-        const atBoundary = direction < 0 ? editor.atFirstLine : editor.atLastLine;
-        if (atBoundary) editor.recall(direction);
-        else editor.moveLine(direction);
-      }
-      else editor.recall(direction);
+      // A single layout pass decides both line motion and the history boundary.
+      else if (!editor.moveLine(direction)) editor.recall(direction);
     } else if (text && !key.ctrl && !key.meta) editor.insert(text);
     schedule();
   };
