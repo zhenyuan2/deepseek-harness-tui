@@ -28,9 +28,10 @@ export class TextSelection {
     this.dragging = this.moved = this.conversation = false;
   }
   get active(): boolean { return this.anchor !== undefined && this.focus !== undefined && this.moved; }
-  get reviewing(): boolean { return this.dragging && this.conversation; }
+  // A press alone must not turn wheel navigation or redraws into a text drag.
+  get reviewing(): boolean { return this.dragging && this.conversation && this.moved; }
   get scrollDirection(): number {
-    if (!this.reviewing || !this.moved || !this.viewport || !this.pointerPosition) return 0;
+    if (!this.reviewing || !this.viewport || !this.pointerPosition) return 0;
     if (this.pointerPosition.row <= this.viewport.top) return -1;
     if (this.pointerPosition.row >= this.viewport.top + this.viewport.height - 1) return 1;
     return 0;
@@ -49,8 +50,10 @@ export class TextSelection {
   }
 
   pointer(report: MouseReport): string | undefined {
-    // Ignore right/middle buttons and no-button motion.
-    if ((report.button & 3) !== 0 || !this.frame.length) return;
+    // Accept button 3 releases (no button held), but ignore no-button motion
+    // and right/middle buttons.
+    const button = report.button & 3;
+    if (!this.frame.length || (button !== 0 && !(report.release && button === 3))) return;
     const position = { column: Math.max(0, Math.min(this.columns - 1, report.column)),
       row: Math.max(0, Math.min(this.frame.length - 1, report.row)) };
     if (report.release) {
